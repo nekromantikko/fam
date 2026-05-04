@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <SDL3/SDL.h>
+#include <familib.h>
 
 #define SAMPLE_RATE 44100
 #define FREQUENCY   440.0f
@@ -26,6 +27,8 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
 }
 
 int main(int argc, char **argv) {
+    familib_init();
+
     if (!SDL_Init(SDL_INIT_AUDIO)) {
         printf("Error initializing SDL: %s\n", SDL_GetError());
         return 1;

@@ -11,4 +11,4 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(SDL3)
 
 add_executable(sdl_demo sdl_demo/sdl_demo.c)
-target_link_libraries(sdl_demo PRIVATE SDL3::SDL3-static)
+target_link_libraries(sdl_demo PRIVATE SDL3::SDL3-static familib)
