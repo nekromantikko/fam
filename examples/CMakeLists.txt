@@ -1,6 +1,3 @@
-cmake_minimum_required(VERSION 3.22.1)
-project(sdl_demo)
-
 include(FetchContent)
 
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -13,5 +10,5 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(SDL3)
 
-add_executable(sdl_demo main.c)
+add_executable(sdl_demo sdl_demo/sdl_demo.c)
 target_link_libraries(sdl_demo PRIVATE SDL3::SDL3-static)
