@@ -3,6 +3,9 @@ project(FamiLib)
 
 option(FAMILIB_BUILD_EXAMPLES "Build examples" OFF)
 
+add_library(familib STATIC src/familib.c)
+target_include_directories(familib PUBLIC include)
+
 if(FAMILIB_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
