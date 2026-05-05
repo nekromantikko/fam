@@ -4,30 +4,28 @@
 #include <familib.h>
 
 #define SAMPLE_RATE 44100
-#define FREQUENCY   440.0f
-
-static float phase = 0.0f;
-
-#define CALLBACK_BUFFER_FRAMES 512
 
 static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
-    static float samples[CALLBACK_BUFFER_FRAMES];
-    int remaining = additional_amount / sizeof(float);
+    fam_Apu* apu = (fam_Apu*)userdata;
+    const double apu_period = 1.0 / fam_apu_get_freq(apu);
 
-    while (remaining > 0) {
-        int frames = remaining < CALLBACK_BUFFER_FRAMES ? remaining : CALLBACK_BUFFER_FRAMES;
-        for (int i = 0; i < frames; i++) {
-            samples[i] = sinf(2.0f * SDL_PI_F * phase) * 0.3f;
-            phase += FREQUENCY / SAMPLE_RATE;
-            if (phase >= 1.0f) phase -= 1.0f;
+    static const double sample_time = 1.0 / (double)SAMPLE_RATE;
+    static double accumulator = 0.0;
+
+    int num_samples = additional_amount / sizeof(float);
+    for (int i = 0; i < num_samples; i++) {
+        static float sample;
+        accumulator += sample_time;
+        while (accumulator >= apu_period) {
+            fam_apu_clock(apu, &sample);
+            accumulator -= apu_period;
         }
-        SDL_PutAudioStreamData(stream, samples, frames * sizeof(float));
-        remaining -= frames;
+        SDL_PutAudioStreamData(stream, &sample, sizeof(float));
     }
 }
 
 int main(int argc, char **argv) {
-    familib_init();
+    fam_Apu* apu = fam_apu_init();
 
     if (!SDL_Init(SDL_INIT_AUDIO)) {
         printf("Error initializing SDL: %s\n", SDL_GetError());
@@ -40,7 +38,7 @@ int main(int argc, char **argv) {
         .freq     = SAMPLE_RATE,
     };
 
-    SDL_AudioStream *stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, NULL);
+    SDL_AudioStream *stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, apu);
     if (!stream) {
         printf("Error opening audio device: %s\n", SDL_GetError());
         SDL_Quit();
@@ -48,10 +46,36 @@ int main(int argc, char **argv) {
     }
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing 440 Hz sine wave...\n");
-    SDL_Delay(3000);
+    printf("Playing C major arpeggio...\n");
+    
+    // Pulse 1 setup: 50% duty, loop, constant volume 8, sweep off
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_DUTY,     0xB8);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_SWEEP,    0x00);
+
+    // C4 (t=426=0x1AA)
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0xAA);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x01);
+    SDL_Delay(500);
+
+    // E4 (t=338=0x152)
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0x52);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x01);
+    SDL_Delay(500);
+
+    // G4 (t=284=0x11C)
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0x1C);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x01);
+    SDL_Delay(500);
+
+    // C5 (t=213=0xD5)
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0xD5);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x00);
+    SDL_Delay(500);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
+
+    fam_apu_free(apu);
+
     return 0;
 }
