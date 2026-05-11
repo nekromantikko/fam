@@ -165,6 +165,78 @@ static void test_length_table_triangle(void) {
     test_length_table(0x400B);
 }
 
+static void test_frame_counter_irq(void) {
+    uint8_t status;
+
+    // Test 1: The IRQ flag is set when the APU Frame counter is in the 4-step mode, and the IRQ flag is enabled.
+    fam_apu_write_register(apu, 0x4017, 0x00); // 4-step mode, enable IRQ
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_NOT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 1: frame IRQ flag should be set in 4-step mode with IRQ enabled");
+
+    // Test 2: The IRQ flag should not be set when the APU frame counter is in the 4-step mode, and the IRQ flag is disabled.
+    fam_apu_write_register(apu, 0x4017, 0x40); // 4-step mode, disable IRQ
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 2: frame IRQ flag should not be set in 4-step mode when IRQ is disabled ($40 to $4017)");
+
+    // Test 3: The IRQ flag should not be set when the APU frame counter is in the 5-step mode, and the IRQ flag is enabled.
+    fam_apu_write_register(apu, 0x4017, 0x80); // 5-step mode, enable IRQ (Which should do nothing)
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 3: frame IRQ flag should never be set in 5-step mode, even with the IRQ-enable bit clear");
+
+    // Test 4: The IRQ flag should not be set when the APU frame counter is in the 5-step mode, and the IRQ flag is disabled.
+    fam_apu_write_register(apu, 0x4017, 0xC0); // 5-step mode, disable IRQ
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 4: frame IRQ flag should never be set in 5-step mode, with IRQ disabled");
+
+    // Test 5: Reading the IRQ flag should clear the IRQ flag.
+    fam_apu_write_register(apu, 0x4017, 0x00); // 4-step mode, enable IRQ
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_read_register(apu, 0x4015, &status); // Read to clear IRQ flag
+    fam_apu_read_register(apu, 0x4015, &status); // Read again, should be cleared now
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 5: reading $4015 should clear the frame IRQ flag, so the second read returns 0");
+
+    // Test 6: The IRQ flag should be cleared when the APU transitions from a "put" cycle to a "get" cycle.
+    // Test 7: The IRQ flag should not be cleared yet the APU transitions from a "get" cycle to a "put" cycle.
+
+    // TODO: Do we care about such precise timing things? How would this even be implemented?
+
+    // Test 8: Changing the frame counter to 5-step mode after the flag was set should not clear the flag.
+    fam_apu_write_register(apu, 0x4017, 0x00); // 4-step mode, enable IRQ
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_write_register(apu, 0x4017, 0x80); // 5-step mode, enable IRQ
+    fam_apu_read_register(apu, 0x4015, &status); // IRQ flag should still be set
+    TEST_ASSERT_NOT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 8: switching to 5-step mode after the flag is already set should leave it set");
+
+    // Test 9: Disabling the IRQ flag should clear the IRQ flag.
+    fam_apu_write_register(apu, 0x4017, 0x00); // 4-step mode, enable IRQ
+    clock_apu(30000); // wait long enough that the IRQ flag would be set
+    fam_apu_write_register(apu, 0x4017, 0x40); // clear the IRQ flag
+    fam_apu_read_register(apu, 0x4015, &status); // IRQ flag should be cleared
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 9: setting the IRQ-disable bit ($40 to $4017) should clear an already-set frame IRQ flag");
+
+    // Test A: The IRQ flag was enabled too early. (writing to $4017 on an odd CPU cycle.)
+    // Test B: The IRQ flag was enabled too late. (writing to $4017 on an odd CPU cycle.)
+    // Test C: The IRQ flag was enabled too early. (writing to $4017 on an even CPU cycle.)
+    // Test D: The IRQ flag was enabled too late. (writing to $4017 on an even CPU cycle.)
+    // Test E: Reading $4015 on the last cycle before the IRQ flag is set should not clear the IRQ flag. (it gets set on the following 2 CPU cycles)
+    // Test F: Reading $4015 on the same cycle the IRQ flag is set should not clear the IRQ flag. (it gets set again on the following CPU cycle)
+    // Test G: Reading $4015 1 cycle later than the previous test should not clear the IRQ flag. (it gets set again on this CPU cycle)
+    // Test H: Reading $4015 1 cycle later than the previous test should clear the IRQ flag.
+    // Test I: The Frame Counter Interrupt flag should not have been set 29827 cycles after resetting the frame counter.
+    // Test J: The Frame Counter Interrupt flag should have been set 29828 cycles after resetting the frame counter, even if supressing Frame Counter Interrupts.
+    // Test K: The Frame Counter Interrupt flag should have been set 29829 cycles after resetting the frame counter, even if supressing Frame Counter Interrupts.
+    // Test L: The Frame Counter Interrupt flag should not have been set 29830 cycles after resetting the frame counter if supressing Frame Counter Interrupts.
+    // Test M: Despite the Frame Counter Interrupt flag being set for those 2 CPU cycles, if suppressing Frame Counter Interrupts, an IRQ should not occur.
+    // Test N: The IRQ Occurs on the wrong CPU cycle.
+    // Test O: The IRQ Occurs on the wrong CPU cycle.
+
+    // TODO: This is more precise timing stuff
+}
+
 void setUp(void) {
     apu = fam_apu_init();
 }
@@ -181,5 +253,6 @@ int main(void) {
     RUN_TEST(test_length_table_pulse2);
     RUN_TEST(test_length_counter_triangle);
     RUN_TEST(test_length_table_triangle);
+    RUN_TEST(test_frame_counter_irq);
     return UNITY_END();
 }
