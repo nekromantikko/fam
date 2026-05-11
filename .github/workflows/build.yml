@@ -14,10 +14,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -B build -DFAMILIB_BUILD_EXAMPLES=ON -DFAMILIB_BUILD_TESTS=ON -DSDL_UNIX_CONSOLE_BUILD=ON
+        run: cmake -B build -DFAMILIB_BUILD_EXAMPLES=ON -DFAMILIB_BUILD_TESTS=ON -DSDL_UNIX_CONSOLE_BUILD=ON -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build --config Debug
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -C Debug
