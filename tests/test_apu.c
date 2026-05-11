@@ -17,7 +17,7 @@ static void clock_apu(int cpu_cycles) {
     }
 }
 
-static void test_length_counter(uint16_t loop_addr, uint16_t load_addr, uint8_t channel_mask) {
+static void test_length_counter(uint8_t channel_mask, uint16_t load_addr, uint16_t loop_addr) {
     uint8_t status;
 
     // Test 1: Reading from $4015 should not state that the channel is playing before writing length counter load
@@ -63,6 +63,8 @@ static void test_length_counter(uint16_t loop_addr, uint16_t load_addr, uint8_t 
     fam_apu_write_register(apu, 0x4015, channel_mask); // Enable channel
     fam_apu_read_register(apu, 0x4015, &status);
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status, "Test 7: length counter should not be loaded when channel is disabled");
+
+    if (loop_addr == 0) return;
 
     // Test 8: If the channel is set to play infinitely, it shouldn't clock the length counter.
     fam_apu_write_register(apu, 0x4017, 0x00); // Reset frame counter
@@ -121,7 +123,7 @@ static void setup_pulse1(void) {
 
 static void test_length_counter_pulse1(void) {
     setup_pulse1();
-    test_length_counter(0x4000, 0x4003, 0x01);
+    test_length_counter(0x01, 0x4003, 0x4000);
 }
 
 static void test_length_table_pulse1(void) {
@@ -139,12 +141,28 @@ static void setup_pulse2(void) {
 
 static void test_length_counter_pulse2(void) {
     setup_pulse2();
-    test_length_counter(0x4004, 0x4007, 0x02);
+    test_length_counter(0x02, 0x4007, 0x4004);
 }
 
 static void test_length_table_pulse2(void) {
     setup_pulse2();
     test_length_table(0x4007);
+}
+
+static void setup_triangle(void) {
+    fam_apu_write_register(apu, 0x4017, 0x40); // Disable the frame counter IRQ's
+    fam_apu_write_register(apu, 0x4015, 0x04); // Enable triangle
+    fam_apu_write_register(apu, 0x400A, 0xFF); // Max value to timer low byte
+}
+
+static void test_length_counter_triangle(void) {
+    setup_triangle();
+    test_length_counter(0x04, 0x400B, 0);
+}
+
+static void test_length_table_triangle(void) {
+    setup_triangle();
+    test_length_table(0x400B);
 }
 
 void setUp(void) {
@@ -161,5 +179,7 @@ int main(void) {
     RUN_TEST(test_length_table_pulse1);
     RUN_TEST(test_length_counter_pulse2);
     RUN_TEST(test_length_table_pulse2);
+    RUN_TEST(test_length_counter_triangle);
+    RUN_TEST(test_length_table_triangle);
     return UNITY_END();
 }

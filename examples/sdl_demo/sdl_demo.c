@@ -47,29 +47,37 @@ int main(int argc, char **argv) {
 
     SDL_ResumeAudioStreamDevice(stream);
     printf("Playing C major arpeggio...\n");
-    
-    // Pulse 1 setup: 50% duty, loop, constant volume 8, sweep off
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_DUTY,     0xB8);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_SWEEP,    0x00);
+
+    fam_apu_write_register(apu, FAM_REGISTER_STATUS,              0x05); // enable pulse1 + triangle
+
+    // Pulse 1: 50% duty, loop, constant volume 8, sweep off
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_DUTY,         0xB8);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_SWEEP,        0x00);
+
+    // Triangle: C3 (t=426=0x1AA, same timer as C4 pulse — triangle runs at 2x clock with 32 steps)
+    // loop=1 so length counter won't decay, max linear counter
+    fam_apu_write_register(apu, FAM_REGISTER_TRIANGLE_COUNTER,    0xFF);
+    fam_apu_write_register(apu, FAM_REGISTER_TRIANGLE_TIMER_LO,   0xAA);
+    fam_apu_write_register(apu, FAM_REGISTER_TRIANGLE_TIMER_HI,   0x01);
 
     // C4 (t=426=0x1AA)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0xAA);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x01);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0xAA);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x01);
     SDL_Delay(500);
 
     // E4 (t=338=0x152)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0x52);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x01);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0x52);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x01);
     SDL_Delay(500);
 
     // G4 (t=284=0x11C)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0x1C);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x01);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0x1C);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x01);
     SDL_Delay(500);
 
     // C5 (t=213=0xD5)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO, 0xD5);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI, 0x00);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0xD5);
+    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x00);
     SDL_Delay(500);
 
     SDL_DestroyAudioStream(stream);
