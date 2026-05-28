@@ -5,7 +5,7 @@
 #include <unity.h>
 #include <fam/apu.h>
 
-static fam_Apu *apu;
+static FamApu *apu;
 
 static void clock_apu(int cpu_cycles) {
     // NOTE: fam_apu_clock advances by one APU cycle (= 2 CPU cycles)

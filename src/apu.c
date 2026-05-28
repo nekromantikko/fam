@@ -94,7 +94,7 @@ typedef struct StatusRegister {
     uint8_t dmc_interrupt : 1;
 } StatusRegister;
 
-struct fam_Apu {
+struct FamApu {
     PulseChannel pulse[2];
     TriangleChannel triangle;
     // NoiseChannel noise;
@@ -168,14 +168,14 @@ static void triangle_channel_clock_length_counter(TriangleChannel* triangle) {
     }
 }
 
-static void apu_clock_quarter_frame(fam_Apu* apu) {
+static void apu_clock_quarter_frame(FamApu* apu) {
     pulse_channel_clock_envelope(apu->pulse);
     pulse_channel_clock_envelope(apu->pulse + 1);
 
     triangle_channel_clock_linear_counter(&apu->triangle);
 }
 
-static void apu_clock_half_frame(fam_Apu* apu) {
+static void apu_clock_half_frame(FamApu* apu) {
     pulse_channel_clock_sweep(apu->pulse, true);
     pulse_channel_clock_sweep(apu->pulse + 1, false);
 
@@ -185,7 +185,7 @@ static void apu_clock_half_frame(fam_Apu* apu) {
     triangle_channel_clock_length_counter(&apu->triangle);
 }
 
-static void apu_clock_frame(fam_Apu* apu) {
+static void apu_clock_frame(FamApu* apu) {
     if (apu->sequencer_mode == 0 && !apu->frame_interrupt_inhibit) {
         // TODO: Do we want to fire an actual mock interrupt? (As a callback?)
         apu->status.frame_interrupt = 1;
@@ -208,7 +208,7 @@ static uint8_t apu_process_pulse(PulseChannel* pulse) {
     return value * volume;
 }
 
-static void apu_write_pulse_register(fam_Apu* apu, int index, int offset, uint8_t data) {
+static void apu_write_pulse_register(FamApu* apu, int index, int offset, uint8_t data) {
     PulseChannel* pulse = apu->pulse + index;
     pulse->raw_registers[offset] = data;
 
@@ -264,7 +264,7 @@ static uint8_t apu_process_triangle(TriangleChannel* triangle) {
     return value;
 }
 
-static void apu_write_triangle_register(fam_Apu* apu, int offset, uint8_t data) {
+static void apu_write_triangle_register(FamApu* apu, int offset, uint8_t data) {
     TriangleChannel* triangle = &apu->triangle;
     triangle->raw_registers[offset] = data;
     
@@ -289,16 +289,16 @@ static void apu_write_triangle_register(fam_Apu* apu, int offset, uint8_t data) 
     }
 }
 
-fam_Apu* fam_apu_init() {
-    fam_Apu* result = (fam_Apu*)calloc(1, sizeof(fam_Apu));
+FamApu* fam_apu_init() {
+    FamApu* result = (FamApu*)calloc(1, sizeof(FamApu));
     return result;
 }
 
-void fam_apu_free(fam_Apu* apu) {
+void fam_apu_free(FamApu* apu) {
     free(apu);
 }
 
-fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data) {
+FamResult fam_apu_write_register(FamApu* apu, FamRegister reg, uint8_t data) {
     switch (reg) {
         case FAM_REGISTER_PULSE1_DUTY:
         case FAM_REGISTER_PULSE1_SWEEP:
@@ -361,7 +361,7 @@ fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data) 
     return FAM_SUCCESS;
 }
 
-fam_Result fam_apu_read_register(fam_Apu* apu, fam_Register reg, uint8_t* out_data) {
+FamResult fam_apu_read_register(FamApu* apu, FamRegister reg, uint8_t* out_data) {
     switch (reg) {
         case FAM_REGISTER_PULSE1_DUTY:
         case FAM_REGISTER_PULSE1_SWEEP:
@@ -394,7 +394,7 @@ fam_Result fam_apu_read_register(fam_Apu* apu, fam_Register reg, uint8_t* out_da
     return FAM_SUCCESS;
 }
 
-void fam_apu_clock(fam_Apu* apu, float* out_sample) {
+void fam_apu_clock(FamApu* apu, float* out_sample) {
     apu->clock_counter++;
 
     if (apu->clock_counter == QUARTER_FRAME_CLOCK) {
@@ -437,7 +437,7 @@ void fam_apu_clock(fam_Apu* apu, float* out_sample) {
     }
 }
 
-double fam_apu_get_freq(fam_Apu* apu) {
+double fam_apu_get_freq(FamApu* apu) {
     // TODO: Add PAL support
     return (double)NES_CPU_FREQ_NTSC / 2.0;
 }

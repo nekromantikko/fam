@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct fam_Apu fam_Apu;
+typedef struct FamApu FamApu;
 
 typedef enum {
     FAM_REGISTER_PULSE1_DUTY         = 0x4000,
@@ -23,11 +23,11 @@ typedef enum {
 
     FAM_REGISTER_STATUS              = 0x4015,
     FAM_REGISTER_FRAME_COUNTER       = 0x4017
-} fam_Register;
+} FamRegister;
 
-fam_Apu* fam_apu_init();
-void fam_apu_free(fam_Apu* apu);
-fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data);
-fam_Result fam_apu_read_register(fam_Apu* apu, fam_Register reg, uint8_t* out_data);
-void fam_apu_clock(fam_Apu* apu, float* out_sample);
-double fam_apu_get_freq(fam_Apu* apu);
+FamApu* fam_apu_init();
+void fam_apu_free(FamApu* apu);
+FamResult fam_apu_write_register(FamApu* apu, FamRegister reg, uint8_t data);
+FamResult fam_apu_read_register(FamApu* apu, FamRegister reg, uint8_t* out_data);
+void fam_apu_clock(FamApu* apu, float* out_sample);
+double fam_apu_get_freq(FamApu* apu);

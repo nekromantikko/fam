@@ -6,7 +6,7 @@
 #define SAMPLE_RATE 44100
 
 static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
-    fam_Apu* apu = (fam_Apu*)userdata;
+    FamApu* apu = (FamApu*)userdata;
     const double apu_period = 1.0 / fam_apu_get_freq(apu);
 
     static const double sample_time = 1.0 / (double)SAMPLE_RATE;
@@ -25,7 +25,7 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
 }
 
 int main(int argc, char **argv) {
-    fam_Apu* apu = fam_apu_init();
+    FamApu* apu = fam_apu_init();
 
     if (!SDL_Init(SDL_INIT_AUDIO)) {
         printf("Error initializing SDL: %s\n", SDL_GetError());
