@@ -1,4 +1,4 @@
-#include "familib.h"
+#include <fam/apu.h>
 #include <stdlib.h>
 
 #define NES_CPU_FREQ_NTSC 1789773
@@ -27,7 +27,7 @@ static const uint8_t LENGTH_TABLE[0x20] = {
     192, 24, 72, 26, 16, 28, 32, 30
 };
 
-typedef struct fam_PulseChannel {
+typedef struct PulseChannel {
     union {
         struct {
             uint8_t volume_envelope_period : 4;
@@ -56,9 +56,9 @@ typedef struct fam_PulseChannel {
 
     int8_t envelope_counter;
     uint8_t envelope_volume;
-} fam_PulseChannel;
+} PulseChannel;
 
-typedef struct fam_TriangleChannel {
+typedef struct TriangleChannel {
     union {
         struct {
             uint8_t linear_counter_load : 7;
@@ -81,9 +81,9 @@ typedef struct fam_TriangleChannel {
 
     bool halt;
 
-} fam_TriangleChannel;
+} TriangleChannel;
 
-typedef struct fam_StatusRegister {
+typedef struct StatusRegister {
     uint8_t enable_pulse1 : 1;
     uint8_t enable_pulse2 : 1;
     uint8_t enable_triangle : 1;
@@ -92,15 +92,15 @@ typedef struct fam_StatusRegister {
     uint8_t unused : 1; // NOTE: Open bus bit, not implemented
     uint8_t frame_interrupt : 1;
     uint8_t dmc_interrupt : 1;
-} fam_StatusRegister;
+} StatusRegister;
 
 struct fam_Apu {
-    fam_PulseChannel pulse[2];
-    fam_TriangleChannel triangle;
-    // fam_NoiseChannel noise;
-    // fam_DmcChannel dmc;
+    PulseChannel pulse[2];
+    TriangleChannel triangle;
+    // NoiseChannel noise;
+    // DmcChannel dmc;
     union {
-        fam_StatusRegister status;
+        StatusRegister status;
         uint8_t raw_status_register;
     };
 
@@ -110,18 +110,18 @@ struct fam_Apu {
     int64_t clock_counter;
 };
 
-static inline bool fam__apu_pulse_muted(const fam_PulseChannel* pulse) {
+static inline bool apu_pulse_muted(const PulseChannel* pulse) {
     return pulse->timer_period < 0x08 || (!pulse->sweep_negate && pulse->sweep_target_period > 0x7FF);
 }
 
-static inline uint16_t fam__apu_pulse_get_target_period(const fam_PulseChannel* pulse, bool is_pulse_1) {
+static inline uint16_t apu_pulse_get_target_period(const PulseChannel* pulse, bool is_pulse_1) {
     const uint16_t period_change = pulse->timer_period >> pulse->sweep_shift;
     return pulse->sweep_negate ? 
         pulse->timer_period - period_change - is_pulse_1
         : pulse->timer_period + period_change;
 }
 
-static void fam__pulse_channel_clock_envelope(fam_PulseChannel* pulse) {
+static void pulse_channel_clock_envelope(PulseChannel* pulse) {
     if (--pulse->envelope_counter == 0) {
         pulse->envelope_counter = pulse->volume_envelope_period + 1;
         if (pulse->envelope_volume > 0) {
@@ -132,25 +132,25 @@ static void fam__pulse_channel_clock_envelope(fam_PulseChannel* pulse) {
     }
 }
 
-static void fam__pulse_channel_clock_sweep(fam_PulseChannel* pulse, bool is_pulse_1) {
-    pulse->sweep_target_period = fam__apu_pulse_get_target_period(pulse, is_pulse_1);
+static void pulse_channel_clock_sweep(PulseChannel* pulse, bool is_pulse_1) {
+    pulse->sweep_target_period = apu_pulse_get_target_period(pulse, is_pulse_1);
     
     if (--pulse->sweep_counter == 0) {
         pulse->sweep_counter = pulse->sweep_period + 1;
         
-        if (pulse->sweep_enabled && !fam__apu_pulse_muted(pulse) && (pulse->sweep_shift > 0)) {
+        if (pulse->sweep_enabled && !apu_pulse_muted(pulse) && (pulse->sweep_shift > 0)) {
             pulse->timer_period = pulse->sweep_target_period;
         }
     }
 }
 
-static void fam__pulse_channel_clock_length_counter(fam_PulseChannel* pulse) {
+static void pulse_channel_clock_length_counter(PulseChannel* pulse) {
     if (!pulse->loop && pulse->length_counter > 0) {
         pulse->length_counter--;
     }
 }
 
-static void fam__triangle_channel_clock_linear_counter(fam_TriangleChannel* triangle) {
+static void triangle_channel_clock_linear_counter(TriangleChannel* triangle) {
     if (triangle->halt) {
         triangle->linear_counter = triangle->linear_counter_load;
     } else if (triangle->linear_counter > 0) {
@@ -162,30 +162,30 @@ static void fam__triangle_channel_clock_linear_counter(fam_TriangleChannel* tria
     }
 }
 
-static void fam__triangle_channel_clock_length_counter(fam_TriangleChannel* triangle) {
+static void triangle_channel_clock_length_counter(TriangleChannel* triangle) {
     if (!triangle->loop && triangle->length_counter > 0) {
         triangle->length_counter--;
     }
 }
 
-static void fam__apu_clock_quarter_frame(fam_Apu* apu) {
-    fam__pulse_channel_clock_envelope(apu->pulse);
-    fam__pulse_channel_clock_envelope(apu->pulse + 1);
+static void apu_clock_quarter_frame(fam_Apu* apu) {
+    pulse_channel_clock_envelope(apu->pulse);
+    pulse_channel_clock_envelope(apu->pulse + 1);
 
-    fam__triangle_channel_clock_linear_counter(&apu->triangle);
+    triangle_channel_clock_linear_counter(&apu->triangle);
 }
 
-static void fam__apu_clock_half_frame(fam_Apu* apu) {
-    fam__pulse_channel_clock_sweep(apu->pulse, true);
-    fam__pulse_channel_clock_sweep(apu->pulse + 1, false);
+static void apu_clock_half_frame(fam_Apu* apu) {
+    pulse_channel_clock_sweep(apu->pulse, true);
+    pulse_channel_clock_sweep(apu->pulse + 1, false);
 
-    fam__pulse_channel_clock_length_counter(apu->pulse);
-    fam__pulse_channel_clock_length_counter(apu->pulse + 1);
+    pulse_channel_clock_length_counter(apu->pulse);
+    pulse_channel_clock_length_counter(apu->pulse + 1);
 
-    fam__triangle_channel_clock_length_counter(&apu->triangle);
+    triangle_channel_clock_length_counter(&apu->triangle);
 }
 
-static void fam__apu_clock_frame(fam_Apu* apu) {
+static void apu_clock_frame(fam_Apu* apu) {
     if (apu->sequencer_mode == 0 && !apu->frame_interrupt_inhibit) {
         // TODO: Do we want to fire an actual mock interrupt? (As a callback?)
         apu->status.frame_interrupt = 1;
@@ -193,14 +193,14 @@ static void fam__apu_clock_frame(fam_Apu* apu) {
     apu->clock_counter = 0;
 }
 
-static uint8_t fam__apu_process_pulse(fam_PulseChannel* pulse) {
+static uint8_t apu_process_pulse(PulseChannel* pulse) {
     pulse->timer_counter--;
     if (pulse->timer_counter == 0xFFFF) {
         pulse->sequence_pos--;
         pulse->timer_counter = pulse->timer_period + 1;
     }
 
-    if (fam__apu_pulse_muted(pulse) || pulse->length_counter == 0) return 0;
+    if (apu_pulse_muted(pulse) || pulse->length_counter == 0) return 0;
 
     const uint8_t sequence = PULSE_SEQ[pulse->duty_cycle];
     const uint8_t value = (sequence >> pulse->sequence_pos) & 0b00000001;
@@ -208,8 +208,8 @@ static uint8_t fam__apu_process_pulse(fam_PulseChannel* pulse) {
     return value * volume;
 }
 
-static void fam__apu_write_pulse_register(fam_Apu* apu, int index, int offset, uint8_t data) {
-    fam_PulseChannel* pulse = apu->pulse + index;
+static void apu_write_pulse_register(fam_Apu* apu, int index, int offset, uint8_t data) {
+    PulseChannel* pulse = apu->pulse + index;
     pulse->raw_registers[offset] = data;
 
     const bool enabled = index == 1 ? apu->status.enable_pulse2 : apu->status.enable_pulse1;
@@ -220,15 +220,15 @@ static void fam__apu_write_pulse_register(fam_Apu* apu, int index, int offset, u
             // So I guess nothing happens? Double check if sounds weird
             break;
         case 1:
-            pulse->sweep_target_period = fam__apu_pulse_get_target_period(pulse, index == 0);
+            pulse->sweep_target_period = apu_pulse_get_target_period(pulse, index == 0);
             pulse->sweep_counter = pulse->sweep_period + 1;
             break;
         case 2:
-            pulse->sweep_target_period = fam__apu_pulse_get_target_period(pulse, index == 0);
+            pulse->sweep_target_period = apu_pulse_get_target_period(pulse, index == 0);
             break;
         case 3:
             // Nesdev: The sequencer is immediately restarted at the first value of the current sequence. The envelope is also restarted. The period divider is not reset.
-            pulse->sweep_target_period = fam__apu_pulse_get_target_period(pulse, index == 0);
+            pulse->sweep_target_period = apu_pulse_get_target_period(pulse, index == 0);
             pulse->sequence_pos = 0;
             pulse->timer_counter = pulse->timer_period + 1;
 
@@ -244,7 +244,7 @@ static void fam__apu_write_pulse_register(fam_Apu* apu, int index, int offset, u
     }
 }
 
-static uint8_t fam__apu_process_triangle(fam_TriangleChannel* triangle) {
+static uint8_t apu_process_triangle(TriangleChannel* triangle) {
     // NOTE: Triangle ticks at CPU clock rate (APU clock x2)
     for (int i = 0; i < 2; i++) {
         if (triangle->length_counter > 0 && triangle->linear_counter > 0) {
@@ -264,8 +264,8 @@ static uint8_t fam__apu_process_triangle(fam_TriangleChannel* triangle) {
     return value;
 }
 
-static void fam__apu_write_triangle_register(fam_Apu* apu, int offset, uint8_t data) {
-    fam_TriangleChannel* triangle = &apu->triangle;
+static void apu_write_triangle_register(fam_Apu* apu, int offset, uint8_t data) {
+    TriangleChannel* triangle = &apu->triangle;
     triangle->raw_registers[offset] = data;
     
     switch (offset) {
@@ -305,7 +305,7 @@ fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data) 
         case FAM_REGISTER_PULSE1_TIMER_LO:
         case FAM_REGISTER_PULSE1_TIMER_HI: {
             int offset = (int)reg - FAM_REGISTER_PULSE1_DUTY;
-            fam__apu_write_pulse_register(apu, 0, offset, data);
+            apu_write_pulse_register(apu, 0, offset, data);
             break;
         }
         case FAM_REGISTER_PULSE2_DUTY:
@@ -313,7 +313,7 @@ fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data) 
         case FAM_REGISTER_PULSE2_TIMER_LO:
         case FAM_REGISTER_PULSE2_TIMER_HI: {
             int offset = (int)reg - FAM_REGISTER_PULSE2_DUTY;
-            fam__apu_write_pulse_register(apu, 1, offset, data);
+            apu_write_pulse_register(apu, 1, offset, data);
             break;
         }
         case FAM_REGISTER_TRIANGLE_COUNTER:
@@ -321,7 +321,7 @@ fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data) 
         case FAM_REGISTER_TRIANGLE_TIMER_LO:
         case FAM_REGISTER_TRIANGLE_TIMER_HI: {
             int offset = (int)reg - FAM_REGISTER_TRIANGLE_COUNTER;
-            fam__apu_write_triangle_register(apu, offset, data);
+            apu_write_triangle_register(apu, offset, data);
             break;
         }
         case FAM_REGISTER_STATUS: {
@@ -349,8 +349,8 @@ fam_Result fam_apu_write_register(fam_Apu* apu, fam_Register reg, uint8_t data) 
             }
             // Nesdev: If the mode flag is set, then both "quarter frame" and "half frame" signals are also generated.
             if (apu->sequencer_mode == 1) {
-                fam__apu_clock_quarter_frame(apu);
-                fam__apu_clock_half_frame(apu);
+                apu_clock_quarter_frame(apu);
+                apu_clock_half_frame(apu);
             }
             break;
         }
@@ -398,29 +398,29 @@ void fam_apu_clock(fam_Apu* apu, float* out_sample) {
     apu->clock_counter++;
 
     if (apu->clock_counter == QUARTER_FRAME_CLOCK) {
-        fam__apu_clock_quarter_frame(apu);
+        apu_clock_quarter_frame(apu);
     } else if (apu->clock_counter == HALF_FRAME_CLOCK) {
-        fam__apu_clock_quarter_frame(apu);
-        fam__apu_clock_half_frame(apu);
+        apu_clock_quarter_frame(apu);
+        apu_clock_half_frame(apu);
     } else if (apu->clock_counter == THREEQUARTERS_FRAME_CLOCK) {
-        fam__apu_clock_quarter_frame(apu);
+        apu_clock_quarter_frame(apu);
     } else if ((apu->sequencer_mode == 0 && apu->clock_counter == FRAME_CLOCK) 
         || (apu->sequencer_mode == 1 && apu->clock_counter == FRAME_CLOCK_MODE1)) {
-        fam__apu_clock_quarter_frame(apu);
-        fam__apu_clock_half_frame(apu);
-        fam__apu_clock_frame(apu);
+        apu_clock_quarter_frame(apu);
+        apu_clock_half_frame(apu);
+        apu_clock_frame(apu);
     }
 
     float pulse_out = 0.0f;
-    uint8_t pulse_sum = fam__apu_process_pulse(apu->pulse);
-    pulse_sum += fam__apu_process_pulse(apu->pulse + 1);
+    uint8_t pulse_sum = apu_process_pulse(apu->pulse);
+    pulse_sum += apu_process_pulse(apu->pulse + 1);
 
     if (pulse_sum > 0) {
         pulse_out = 95.52f / (8128.0f / pulse_sum + 100);
     }
 
     float tnd_out = 0.0f;
-    uint8_t triangle = fam__apu_process_triangle(&apu->triangle);
+    uint8_t triangle = apu_process_triangle(&apu->triangle);
     uint8_t noise = 0;
     uint8_t dmc = 0;
 

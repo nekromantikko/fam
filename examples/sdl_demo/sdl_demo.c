@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <SDL3/SDL.h>
-#include <familib.h>
+#include <fam/apu.h>
 
 #define SAMPLE_RATE 44100
 
