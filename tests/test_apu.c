@@ -238,7 +238,7 @@ static void test_frame_counter_irq(void) {
 }
 
 void setUp(void) {
-    apu = fam_apu_init();
+    fam_apu_init(&apu);
 }
 
 void tearDown(void) {

@@ -289,16 +289,22 @@ static void apu_write_triangle_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
-FamApu* fam_apu_init() {
-    FamApu* result = (FamApu*)calloc(1, sizeof(FamApu));
-    return result;
+FamResult fam_apu_init(FamApu** out_apu) {
+    if (out_apu == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+    *out_apu = (FamApu*)calloc(1, sizeof(FamApu));
+    if (*out_apu == NULL) {
+        return FAM_ERROR_OUT_OF_MEMORY;
+    }
+    return FAM_SUCCESS;
 }
 
 void fam_apu_free(FamApu* apu) {
     free(apu);
 }
 
-FamResult fam_apu_write_register(FamApu* apu, FamRegister reg, uint8_t data) {
+FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
     switch (reg) {
         case FAM_REGISTER_PULSE1_DUTY:
         case FAM_REGISTER_PULSE1_SWEEP:
@@ -355,13 +361,13 @@ FamResult fam_apu_write_register(FamApu* apu, FamRegister reg, uint8_t data) {
             break;
         }
         default:
-            return FAM_ERROR_INVALID_REGISTER;
+            return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     return FAM_SUCCESS;
 }
 
-FamResult fam_apu_read_register(FamApu* apu, FamRegister reg, uint8_t* out_data) {
+FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
     switch (reg) {
         case FAM_REGISTER_PULSE1_DUTY:
         case FAM_REGISTER_PULSE1_SWEEP:
@@ -388,7 +394,7 @@ FamResult fam_apu_read_register(FamApu* apu, FamRegister reg, uint8_t* out_data)
         case FAM_REGISTER_FRAME_COUNTER:
             return FAM_ERROR_WRITE_ONLY;
         default:
-            return FAM_ERROR_INVALID_REGISTER;
+            return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     return FAM_SUCCESS;

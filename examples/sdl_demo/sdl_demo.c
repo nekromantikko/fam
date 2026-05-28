@@ -25,7 +25,11 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
 }
 
 int main(int argc, char **argv) {
-    FamApu* apu = fam_apu_init();
+    FamApu* apu;
+    FamResult err = fam_apu_init(&apu);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing APU failed with error code %d\n", err);
+    }
 
     if (!SDL_Init(SDL_INIT_AUDIO)) {
         printf("Error initializing SDL: %s\n", SDL_GetError());
