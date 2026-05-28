@@ -3,7 +3,7 @@
 // The AccuracyCoin APU tests are in turn largely based on APU tests by blargg.
 
 #include <unity.h>
-#include <familib.h>
+#include <fam/apu.h>
 
 static fam_Apu *apu;
 

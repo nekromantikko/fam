@@ -1,15 +1,9 @@
 #pragma once
+#include <fam/common.h>
 #include <stdint.h>
 #include <stdbool.h>
 
 typedef struct fam_Apu fam_Apu;
-
-typedef enum {
-    FAM_SUCCESS                     = 0,
-    FAM_ERROR_INVALID_REGISTER      = 1,
-    FAM_ERROR_WRITE_ONLY            = 2,
-    FAM_ERROR_READ_ONLY             = 3,
-} fam_Result;
 
 typedef enum {
     FAM_REGISTER_PULSE1_DUTY         = 0x4000,
