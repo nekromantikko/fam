@@ -293,10 +293,11 @@ FamResult fam_apu_init(FamApu** out_apu) {
     if (out_apu == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
-    *out_apu = (FamApu*)calloc(1, sizeof(FamApu));
-    if (*out_apu == NULL) {
+    FamApu* apu = (FamApu*)calloc(1, sizeof(FamApu));
+    if (apu == NULL) {
         return FAM_ERROR_OUT_OF_MEMORY;
     }
+    *out_apu = apu;
     return FAM_SUCCESS;
 }
 
