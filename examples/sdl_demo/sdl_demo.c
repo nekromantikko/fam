@@ -1,34 +1,62 @@
 #include <stdio.h>
 #include <math.h>
 #include <SDL3/SDL.h>
-#include <fam/apu.h>
+#include <fam/player.h>
 
 #define SAMPLE_RATE 44100
 
-static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
-    FamApu* apu = (FamApu*)userdata;
-    const double apu_period = 1.0 / fam_apu_get_freq(apu);
+static const uint8_t arpeggio_data[] = {
+    // Header (40 bytes)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Sample data size
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Sample data offset
+    0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Record count
+    0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Record offset
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Loop point (No loop)
 
-    static const double sample_time = 1.0 / (double)SAMPLE_RATE;
-    static double accumulator = 0.0;
+    // Records (51 bytes)
+    // Frame 0: channel setup + C4
+    0x00, 0x40, 0xB8,  // $4000 PULSE1_DUTY = 0xB8 (50% duty, loop, const vol 8)
+    0x01, 0x40, 0x00,  // $4001 PULSE1_SWEEP = 0x00 (sweep off)
+    0x08, 0x40, 0xFF,  // $4008 TRI_COUNTER = 0xFF (loop, max linear)
+    0x0A, 0x40, 0xAA,  // $400A TRI_TIMER_LO = 0xAA (C3, t=0x1AA)
+    0x0B, 0x40, 0x01,  // $400B TRI_TIMER_HI = 0x01
+    0x02, 0x40, 0xAA,  // $4002 PULSE1_TIMER_LO = 0xAA (C4, t=0x1AA)
+    0x03, 0x40, 0x01,  // $4003 PULSE1_TIMER_HI = 0x01 (note-on)
+    0x00, 0x00, 0x1D,  // ENDFRAME, skip 29 (hold for 30 frames total)
+
+    // Frame 30: E4
+    0x02, 0x40, 0x52,  // $4002 PULSE1_TIMER_LO = 0x52 (E4, t=0x152)
+    0x03, 0x40, 0x01,  // $4003 PULSE1_TIMER_HI = 0x01 (note-on)
+    0x00, 0x00, 0x1D,  // ENDFRAME, skip 29
+
+    // Frame 60: G4
+    0x02, 0x40, 0x1C,  // $4002 PULSE1_TIMER_LO = 0x1C (G4, t=0x11C)
+    0x03, 0x40, 0x01,  // $4003 PULSE1_TIMER_HI = 0x01 (note-on)
+    0x00, 0x00, 0x1D,  // ENDFRAME, skip 29
+
+    // Frame 90: C5
+    0x02, 0x40, 0xD5,  // $4002 PULSE1_TIMER_LO = 0xD5 (C5, t=0x0D5)
+    0x03, 0x40, 0x00,  // $4003 PULSE1_TIMER_HI = 0x00 (note-on)
+    0x00, 0x00, 0x1D,  // ENDFRAME, skip 29
+};
+
+static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
+    FamPlayer* player = (FamPlayer*)userdata;
 
     int num_samples = additional_amount / sizeof(float);
     for (int i = 0; i < num_samples; i++) {
         static float sample;
-        accumulator += sample_time;
-        while (accumulator >= apu_period) {
-            fam_apu_clock(apu, &sample);
-            accumulator -= apu_period;
-        }
+        fam_player_process_samples(player, 1, &sample);
         SDL_PutAudioStreamData(stream, &sample, sizeof(float));
     }
 }
 
 int main(int argc, char **argv) {
-    FamApu* apu;
-    FamResult err = fam_apu_init(&apu);
+    FamPlayer* player;
+    FamResult err = fam_player_init(SAMPLE_RATE, &player);
     if (err != FAM_SUCCESS) {
-        printf("Initializing APU failed with error code %d\n", err);
+        printf("Initializing player failed with error code %d\n", err);
+        return 1;
     }
 
     if (!SDL_Init(SDL_INIT_AUDIO)) {
@@ -42,52 +70,24 @@ int main(int argc, char **argv) {
         .freq     = SAMPLE_RATE,
     };
 
-    SDL_AudioStream *stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, apu);
+    SDL_AudioStream *stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, player);
     if (!stream) {
         printf("Error opening audio device: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
 
+    fam_player_play_music(player, (FamMusic*)arpeggio_data);
+
     SDL_ResumeAudioStreamDevice(stream);
     printf("Playing C major arpeggio...\n");
 
-    fam_apu_write_register(apu, FAM_REGISTER_STATUS,              0x05); // enable pulse1 + triangle
-
-    // Pulse 1: 50% duty, loop, constant volume 8, sweep off
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_DUTY,         0xB8);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_SWEEP,        0x00);
-
-    // Triangle: C3 (t=426=0x1AA, same timer as C4 pulse — triangle runs at 2x clock with 32 steps)
-    // loop=1 so length counter won't decay, max linear counter
-    fam_apu_write_register(apu, FAM_REGISTER_TRIANGLE_COUNTER,    0xFF);
-    fam_apu_write_register(apu, FAM_REGISTER_TRIANGLE_TIMER_LO,   0xAA);
-    fam_apu_write_register(apu, FAM_REGISTER_TRIANGLE_TIMER_HI,   0x01);
-
-    // C4 (t=426=0x1AA)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0xAA);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x01);
-    SDL_Delay(500);
-
-    // E4 (t=338=0x152)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0x52);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x01);
-    SDL_Delay(500);
-
-    // G4 (t=284=0x11C)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0x1C);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x01);
-    SDL_Delay(500);
-
-    // C5 (t=213=0xD5)
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_LO,     0xD5);
-    fam_apu_write_register(apu, FAM_REGISTER_PULSE1_TIMER_HI,     0x00);
-    SDL_Delay(500);
+    SDL_Delay(3000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
-    fam_apu_free(apu);
+    fam_player_free(player);
 
     return 0;
 }
