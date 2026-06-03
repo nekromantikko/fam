@@ -13,7 +13,7 @@ static void clock_apu(int cpu_cycles) {
     // precise timing tests
     int apu_cycles = cpu_cycles / 2;
     for (int i = 0; i < apu_cycles; i++) {
-        fam_apu_clock(apu, NULL);
+        fam_apu_clock(apu);
     }
 }
 
