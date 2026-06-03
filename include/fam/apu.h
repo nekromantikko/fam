@@ -29,5 +29,6 @@ FamResult fam_apu_init(FamApu** out_apu);
 void fam_apu_free(FamApu* apu);
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
-void fam_apu_clock(FamApu* apu, float* out_sample);
+void fam_apu_clock(FamApu* apu);
+void fam_apu_get_sample(FamApu* apu, void* out_sample);
 double fam_apu_get_freq(FamApu* apu);

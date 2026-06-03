@@ -104,11 +104,9 @@ void fam_player_process_samples(FamPlayer* player, int count, void* out_samples)
     const double sample_time = 1.0 / (double)player->sample_rate;
 
     for (int i = 0; i < count; i++) {
-        // TODO: Other output formats
-        float* sample = ((float*)out_samples) + i;
         player->accumulator += sample_time;
         while (player->accumulator >= apu_period) {
-            fam_apu_clock(player->apu, sample);
+            fam_apu_clock(player->apu);
             player->accumulator -= apu_period;
 
             // Check frame interrupt flag and process frame
@@ -118,6 +116,10 @@ void fam_player_process_samples(FamPlayer* player, int count, void* out_samples)
                 player_process_frame(player);
             }
         }
+
+        // TODO: Other output formats
+        float* sample = ((float*)out_samples) + i;
+        fam_apu_get_sample(player->apu, sample);
     }
 }
 
