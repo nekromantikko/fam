@@ -199,12 +199,7 @@ static void triangle_clock_timer(TriangleChannel* triangle) {
 }
 
 static uint8_t triangle_get_output(TriangleChannel* triangle) {
-    if (triangle->length_counter == 0 || triangle->linear_counter == 0) {
-        return 0;
-    }
-
-    const uint8_t value = TRIANGLE_SEQ[triangle->sequence];
-    return value;
+    return TRIANGLE_SEQ[triangle->sequence];
 }
 
 static void apu_clock_quarter_frame(FamApu* apu) {
