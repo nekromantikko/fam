@@ -152,7 +152,7 @@ static void pulse_clock_length_counter(PulseChannel* pulse) {
 
 static void pulse_clock_timer(PulseChannel* pulse) {
     pulse->timer_counter--;
-    if (pulse->timer_counter == 0xFFFF) {
+    if (pulse->timer_counter == 0) {
         pulse->sequence_pos--;
         pulse->timer_counter = pulse->timer_period + 1;
     }
@@ -190,7 +190,7 @@ static void triangle_clock_timer(TriangleChannel* triangle) {
     for (int i = 0; i < 2; i++) {
         if (triangle->length_counter > 0 && triangle->linear_counter > 0) {
             triangle->timer_counter--;
-            if (triangle->timer_counter == 0xFFFF) {
+            if (triangle->timer_counter == 0) {
                 triangle->sequence--;
                 triangle->timer_counter = triangle->timer_period + 1;
             }
