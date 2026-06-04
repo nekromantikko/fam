@@ -20,11 +20,21 @@ static const uint8_t TRIANGLE_SEQ[32] = {
     15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 };
 
-static const uint8_t LENGTH_TABLE[0x20] = {
+static const uint8_t LENGTH_TABLE[32] = {
     10, 254, 20, 2, 40, 4, 80, 6,
     160, 8, 60, 10, 14, 12, 26, 14,
     12, 16, 24, 18, 48, 20, 96, 22,
     192, 24, 72, 26, 16, 28, 32, 30
+};
+
+// NOTE: These noise period values are half what is written on Nesdev, 
+// because they're APU cycles instead of CPU cycles
+static const uint16_t NOISE_PERIOD_NTSC[16] = {
+    2, 4, 8, 16, 32, 48, 64, 80, 101, 127, 190, 254, 381, 508, 1017, 2034
+};
+
+static const uint16_t NOISE_PERIOD_PAL[16] = {
+    2, 4, 7, 15, 30, 44, 59, 74, 94, 118, 177, 236, 354, 472, 945, 1889
 };
 
 typedef struct PulseChannel {
@@ -83,6 +93,36 @@ typedef struct TriangleChannel {
 
 } TriangleChannel;
 
+typedef struct NoiseChannel {
+    union {
+        struct {
+            uint8_t volume_envelope_period : 4;
+            uint8_t constant_volume : 1;
+            uint8_t loop : 1;
+            uint8_t unused0 : 2;
+            
+            uint8_t unused1;
+
+            uint8_t period : 4;
+            uint8_t unused2 : 3;
+            uint8_t mode : 1;
+
+            uint8_t unused3 : 3;
+            uint8_t length_counter_load : 5;
+        };
+        uint8_t raw_registers[4];
+    };
+
+    uint16_t timer_counter;
+
+    uint16_t shift_register : 15;
+
+    uint8_t length_counter;
+
+    int8_t envelope_counter;
+    uint8_t envelope_volume;
+} NoiseChannel;
+
 typedef struct StatusRegister {
     uint8_t enable_pulse1 : 1;
     uint8_t enable_pulse2 : 1;
@@ -97,7 +137,7 @@ typedef struct StatusRegister {
 struct FamApu {
     PulseChannel pulse[2];
     TriangleChannel triangle;
-    // NoiseChannel noise;
+    NoiseChannel noise;
     // DmcChannel dmc;
     union {
         StatusRegister status;
@@ -132,7 +172,7 @@ static void pulse_clock_envelope(PulseChannel* pulse) {
     }
 }
 
-static void pulse_channel_clock_sweep(PulseChannel* pulse, bool is_pulse_1) {
+static void pulse_clock_sweep(PulseChannel* pulse, bool is_pulse_1) {
     pulse->sweep_target_period = pulse_get_target_period(pulse, is_pulse_1);
     
     if (--pulse->sweep_counter == 0) {
@@ -202,21 +242,66 @@ static uint8_t triangle_get_output(TriangleChannel* triangle) {
     return TRIANGLE_SEQ[triangle->sequence];
 }
 
+static void noise_clock_envelope(NoiseChannel* noise) {
+    if (--noise->envelope_counter == 0) {
+        noise->envelope_counter = noise->volume_envelope_period + 1;
+        if (noise->envelope_volume > 0) {
+            noise->envelope_volume--;
+        } else if (noise->loop) {
+            noise->envelope_volume = 0x0F;
+        }
+    }
+}
+
+static void noise_clock_length_counter(NoiseChannel* noise) {
+    if (!noise->loop && noise->length_counter > 0) {
+        noise->length_counter--;
+    }
+}
+
+static void noise_clock_timer(NoiseChannel* noise) {
+    noise->timer_counter--;
+    if (noise->timer_counter == 0) {
+        const uint8_t mode_bit_index = noise->mode ? 6 : 1;
+        const uint8_t mode_bit = (uint8_t)noise->shift_register >> mode_bit_index;
+        const uint8_t feedback_bit = (noise->shift_register ^ mode_bit) & 1;
+
+        noise->shift_register >>= 1;
+        noise->shift_register |= (feedback_bit << 14);
+
+        // TODO: PAL support
+        noise->timer_counter = NOISE_PERIOD_NTSC[noise->period];
+    }
+}
+
+static uint8_t noise_get_output(NoiseChannel* noise) {
+    if (noise->length_counter == 0 || noise->shift_register & 1) {
+        return 0;
+    }
+
+    const uint8_t volume = noise->constant_volume ? noise->volume_envelope_period : noise->envelope_volume;
+    return volume;
+}
+
 static void apu_clock_quarter_frame(FamApu* apu) {
     pulse_clock_envelope(apu->pulse);
     pulse_clock_envelope(apu->pulse + 1);
 
     triangle_clock_linear_counter(&apu->triangle);
+
+    noise_clock_envelope(&apu->noise);
 }
 
 static void apu_clock_half_frame(FamApu* apu) {
-    pulse_channel_clock_sweep(apu->pulse, true);
-    pulse_channel_clock_sweep(apu->pulse + 1, false);
+    pulse_clock_sweep(apu->pulse, true);
+    pulse_clock_sweep(apu->pulse + 1, false);
 
     pulse_clock_length_counter(apu->pulse);
     pulse_clock_length_counter(apu->pulse + 1);
 
     triangle_clock_length_counter(&apu->triangle);
+
+    noise_clock_length_counter(&apu->noise);
 }
 
 static void apu_clock_frame(FamApu* apu) {
@@ -246,10 +331,10 @@ static void apu_write_pulse_register(FamApu* apu, int index, int offset, uint8_t
             pulse->sweep_target_period = pulse_get_target_period(pulse, index == 0);
             break;
         case 3:
-            // Nesdev: The sequencer is immediately restarted at the first value of the current sequence. The envelope is also restarted. The period divider is not reset.
+            // Nesdev: The sequencer is immediately restarted at the first value of the current sequence. 
+            // The envelope is also restarted. The period divider is not reset.
             pulse->sweep_target_period = pulse_get_target_period(pulse, index == 0);
             pulse->sequence_pos = 0;
-            pulse->timer_counter = pulse->timer_period + 1;
 
             pulse->envelope_counter = pulse->volume_envelope_period + 1;
             pulse->envelope_volume = 0x0F;
@@ -277,10 +362,30 @@ static void apu_write_triangle_register(FamApu* apu, int offset, uint8_t data) {
             // AKA halt
             triangle->halt = true;
 
-            triangle->timer_counter = triangle->timer_period + 1;
-
             if (apu->status.enable_triangle) {
                 triangle->length_counter = LENGTH_TABLE[triangle->length_counter_load];
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void apu_write_noise_register(FamApu* apu, int offset, uint8_t data) {
+    NoiseChannel* noise = &apu->noise;
+    noise->raw_registers[offset] = data;
+
+    switch (offset) {
+        case 0:
+        case 1:
+        case 2:
+            break;
+        case 3:
+            noise->envelope_counter = noise->volume_envelope_period + 1;
+            noise->envelope_volume = 0x0F;
+
+            if (apu->status.enable_noise) {
+                noise->length_counter = LENGTH_TABLE[noise->length_counter_load];
             }
             break;
         default:
@@ -296,6 +401,12 @@ FamResult fam_apu_init(FamApu** out_apu) {
     if (apu == NULL) {
         return FAM_ERROR_OUT_OF_MEMORY;
     }
+
+    // TODO: Should these be in their own function?
+    apu->noise.shift_register = 1;
+    // TODO: PAL support
+    apu->noise.timer_counter = NOISE_PERIOD_NTSC[0];
+
     *out_apu = apu;
     return FAM_SUCCESS;
 }
@@ -330,6 +441,14 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             apu_write_triangle_register(apu, offset, data);
             break;
         }
+        case FAM_REGISTER_NOISE_ENVELOPE:
+        case FAM_REGISTER_NOISE_UNUSED:
+        case FAM_REGISTER_NOISE_PERIOD:
+        case FAM_REGISTER_NOISE_LOAD: {
+            int offset = (int)reg - FAM_REGISTER_NOISE_ENVELOPE;
+            apu_write_noise_register(apu, offset, data);
+            break;
+        }
         case FAM_REGISTER_STATUS: {
             // Only set first 5 bits
             apu->raw_status_register = (apu->raw_status_register & 0b11100000) | (data & 0b00011111);
@@ -341,6 +460,9 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             }
             if (!apu->status.enable_triangle) {
                 apu->triangle.length_counter = 0;
+            }
+            if (!apu->status.enable_noise) {
+                apu->noise.length_counter = 0;
             }
             // TODO: Handle other side-effects
             break;
@@ -381,6 +503,10 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
         case FAM_REGISTER_TRIANGLE_UNUSED:
         case FAM_REGISTER_TRIANGLE_TIMER_LO:
         case FAM_REGISTER_TRIANGLE_TIMER_HI:
+        case FAM_REGISTER_NOISE_ENVELOPE:
+        case FAM_REGISTER_NOISE_UNUSED:
+        case FAM_REGISTER_NOISE_PERIOD:
+        case FAM_REGISTER_NOISE_LOAD:
             return FAM_ERROR_WRITE_ONLY;
         case FAM_REGISTER_STATUS: {
             // Keep bit 5 as it was
@@ -388,6 +514,7 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
             if (apu->pulse[0].length_counter == 0) *out_data &= 0b11111110;
             if (apu->pulse[1].length_counter == 0) *out_data &= 0b11111101;
             if (apu->triangle.length_counter == 0) *out_data &= 0b11111011;
+            if (apu->noise.length_counter == 0) *out_data &= 0b11110111;
             apu->status.frame_interrupt = 0;
             break;
         }
@@ -420,6 +547,7 @@ void fam_apu_clock(FamApu* apu) {
     pulse_clock_timer(apu->pulse);
     pulse_clock_timer(apu->pulse + 1);
     triangle_clock_timer(&apu->triangle);
+    noise_clock_timer(&apu->noise);
 }
 
 void fam_apu_get_sample(FamApu* apu, void* out_sample) {
@@ -433,7 +561,7 @@ void fam_apu_get_sample(FamApu* apu, void* out_sample) {
 
     float tnd_out = 0.0f;
     uint8_t triangle = triangle_get_output(&apu->triangle);
-    uint8_t noise = 0;
+    uint8_t noise = noise_get_output(&apu->noise);
     uint8_t dmc = 0;
 
     if (triangle != 0 || noise != 0 || dmc != 0) {
