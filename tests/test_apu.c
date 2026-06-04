@@ -72,7 +72,7 @@ static void test_length_counter(uint8_t channel_mask, uint16_t load_addr, uint16
     fam_apu_write_register(apu, loop_addr, 0x30); // Set loop = true
     fam_apu_write_register(apu, 0x4017, 0x80); // Try to clock length counter
     fam_apu_write_register(apu, 0x4017, 0x80); // This should not do anything since loop is enabled
-    fam_apu_write_register(apu, 0x4000, 0x10); // Set loop = false
+    fam_apu_write_register(apu, loop_addr, 0x10); // Set loop = false
     fam_apu_read_register(apu, 0x4015, &status);
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(channel_mask, status, "Test 8: while loop is enabled the length counter should not be clocked, so channel keeps playing");
 
@@ -165,6 +165,22 @@ static void test_length_table_triangle(void) {
     test_length_table(0x400B);
 }
 
+static void setup_noise(void) {
+    fam_apu_write_register(apu, 0x4017, 0x40); // Disable the frame counter IRQ's
+    fam_apu_write_register(apu, 0x4015, 0x08); // Enable noise
+    fam_apu_write_register(apu, 0x400C, 0x10); // Loop = false, constant volume = true
+}
+
+static void test_length_counter_noise(void) {
+    setup_noise();
+    test_length_counter(0x08, 0x400F, 0x400C);
+}
+
+static void test_length_table_noise(void) {
+    setup_noise();
+    test_length_table(0x400F);
+}
+
 static void test_frame_counter_irq(void) {
     uint8_t status;
 
@@ -253,6 +269,8 @@ int main(void) {
     RUN_TEST(test_length_table_pulse2);
     RUN_TEST(test_length_counter_triangle);
     RUN_TEST(test_length_table_triangle);
+    RUN_TEST(test_length_counter_noise);
+    RUN_TEST(test_length_table_noise);
     RUN_TEST(test_frame_counter_irq);
     return UNITY_END();
 }
