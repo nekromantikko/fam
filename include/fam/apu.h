@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 typedef struct FamApu FamApu;
+typedef uint8_t (*FamDmcReadFn)(void* user_data, uint16_t addr);
 
 typedef enum {
     FAM_REGISTER_PULSE1_DUTY         = 0x4000,
@@ -26,6 +27,11 @@ typedef enum {
     FAM_REGISTER_NOISE_PERIOD        = 0x400E,
     FAM_REGISTER_NOISE_LOAD          = 0x400F,
 
+    FAM_REGISTER_DMC_FLAGS           = 0x4010,
+    FAM_REGISTER_DMC_LOAD            = 0x4011,
+    FAM_REGISTER_DMC_ADDRESS         = 0x4012,
+    FAM_REGISTER_DMC_LENGTH          = 0x4013,
+
     FAM_REGISTER_STATUS              = 0x4015,
     FAM_REGISTER_FRAME_COUNTER       = 0x4017
 } FamRegister;
@@ -34,6 +40,7 @@ FamResult fam_apu_init(FamApu** out_apu);
 void fam_apu_free(FamApu* apu);
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
+void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
 void fam_apu_clock(FamApu* apu);
 void fam_apu_get_sample(FamApu* apu, void* out_sample);
 double fam_apu_get_freq(FamApu* apu);

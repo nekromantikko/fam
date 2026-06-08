@@ -253,6 +253,207 @@ static void test_frame_counter_irq(void) {
     // TODO: This is more precise timing stuff
 }
 
+void test_dmc(void) {
+    // Setup
+    fam_apu_write_register(apu, 0x4012, 0x00); // Sample address $C000
+    fam_apu_write_register(apu, 0x4013, 0x01); // Length of 1 * 16 + 1 = 17
+    fam_apu_write_register(apu, 0x4010, 0x0F); // Fastest sample rate, disable DMC IRQ
+    clock_apu(4000);
+
+    uint8_t status;
+
+    // Test 1: Reading address $4015 should set bit 4 when the DMC is playing and clear bit 4 when the sample ends.
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should be playing by now
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test 1: DMC should be playing (bit 4 set) while the sample is in progress");
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should have stopped by now
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test 1: DMC should have stopped (bit 4 clear) after the sample ends");
+
+    // Test 2: Restarting the DMC should re-load the sample length.
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(4320);
+    fam_apu_write_register(apu, 0x4015, 0x00);
+    fam_apu_write_register(apu, 0x4015, 0x10); // Restart DMC (The sample length should be reset to 17)
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should still be playing
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test 2: DMC should still be playing after a restart reloads the sample length");
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should have stopped by now
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test 2: DMC should have stopped once the restarted sample finishes");
+
+    // Test 3: Writing $10 to $4015 should start playing a new sample if the previous one ended.
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(8640); // Wait for sample to end
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should be playing
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test 3: writing $10 to $4015 after the previous sample ended should start a new sample (DMC playing)");
+
+    // Test 4: Writing $10 to $4015 while a sample is currently playing shouldn't affect anything.
+    clock_apu(4320);
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(4320);
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should still be playing
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test 4: writing $10 to $4015 while a sample is already playing should not restart it (still playing)");
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should have stopped
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test 4: the sample should still finish normally after the redundant $10 writes (DMC stopped)");
+
+    // Test 5: Writing $00 to $4015 should immediately stop the sample.
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(4320);
+    fam_apu_write_register(apu, 0x4015, 0x00);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should have stopped
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test 5: writing $00 to $4015 should immediately stop the sample (bit 4 clear)");
+
+    // Test 6: Writing to $4013 shouldn't change the sample length of the currently playing sample.
+    fam_apu_write_register(apu, 0x4015, 0x10); // Start the sample
+    fam_apu_write_register(apu, 0x4013, 0x02); // 33 byte sample
+    clock_apu(8640);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should have stopped
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test 6: the $4013 write must not extend the currently-playing 17-byte sample - it should still finish (DMC stopped)");
+    // Sample length is now 33
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    fam_apu_write_register(apu, 0x4013, 0x01); // Set sample length back to 17
+    clock_apu(12960);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should be playing
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test 6: the now-playing 33-byte sample should still be in progress - the $4013=0x01 write must not shorten it");
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status); // DMC should have stopped
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test 6: the 33-byte sample should have finished by now (DMC stopped)");
+
+    // Test 7: The DMC IRQ flag should not be set when disabled.
+    fam_apu_write_register(apu, 0x4015, 0x10); // Start the sample
+    clock_apu(8640);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test 7: DMC IRQ flag (bit 7) should not be set when the IRQ is disabled");
+
+    // Test 8: The DMC IRQ flag should be set when enabled, and a sample ends.
+    fam_apu_write_register(apu, 0x4010, 0x8F); // Enable IRQ, fastest sample rate
+    fam_apu_write_register(apu, 0x4015, 0x10); // Start the sample
+    clock_apu(8640);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, status & 0x80, "Test 8: DMC IRQ flag (bit 7) should be set when the IRQ is enabled");
+
+    // Test 9: Reading $4015 should not clear the IRQ flag.
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, status & 0x80, "Test 9: DMC IRQ flag (bit 7) should still be set when status is read again");
+
+    // Test A: Writing to $4015 should clear the IRQ flag.
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test A: DMC IRQ flag (bit 7) should be cleared when status is written");
+
+    // Test B: Disabling the IRQ flag should clear the IRQ flag.
+    fam_apu_write_register(apu, 0x4015, 0x00);
+    fam_apu_write_register(apu, 0x4015, 0x10); // Restart sample
+    clock_apu(8640); // Wait for interrupt flag to be set
+    fam_apu_write_register(apu, 0x4010, 0x0F); // Disable IRQ
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test B: DMC IRQ flag (bit 7) should be cleared when DMC IRQ is disabled");
+
+    // Test C: Looping samples should loop.
+    fam_apu_write_register(apu, 0x4010, 0x4F); // Enable loop
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(50000); // Wait for a while...
+    fam_apu_read_register(apu, 0x4015, &status); // Should still be playing
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test C: a looping sample should still be playing after a long wait (bit 4 stays set)");
+    fam_apu_write_register(apu, 0x4015, 0x00); // Should stop the sample
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test C: writing $00 to $4015 should stop even a looping sample");
+
+    // Test D: Looping samples should not set the IRQ flag when they loop.
+    fam_apu_write_register(apu, 0x4010, 0xCF); // Enable loop + IRQ
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(50000);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test D: DMC IRQ flag (bit 7) should not be set by looping samples");
+    // NOTE: AccuracyCoin just writes the read status back here, not stopping anything
+    // Not sure if it's a bug in the code or a mistaken comment
+    fam_apu_write_register(apu, 0x4015, 0x00);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test D: DMC IRQ flag (bit 7) should not be set by looping samples, even when force-stopped");
+
+    // Test E: Clearing the looping flag and then setting it again should keep the sample looping.
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(26352);
+    fam_apu_write_register(apu, 0x4010, 0x8F); // Disable loop
+    fam_apu_write_register(apu, 0x4010, 0xCF); // Enable loop again
+    clock_apu(50000);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test E: clearing then immediately re-setting the loop flag should keep the sample looping (still playing)");
+
+    // Test F: Clearing the looping flag should not immediately end the sample. The sample should then play for its remaining bytes.
+    fam_apu_write_register(apu, 0x4015, 0x00);
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(26352);
+    fam_apu_write_register(apu, 0x4010, 0x8F); // Disable loop
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test F: DMC IRQ flag (bit 7) should NOT be set yet - the sample is still playing right after the loop flag is cleared");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test F: clearing the loop flag must not immediately end the sample - it should still be playing its remaining bytes");
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, status & 0x80, "Test F: DMC IRQ flag (bit 7) should be set once the sample finishes its remaining bytes");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test F: DMC should have stopped (bit 4 clear) after playing out its remaining bytes");
+
+    // Test G: A looping sample should reload the sample length from $4013 every time the sample loops.
+    fam_apu_write_register(apu, 0x4010, 0xCF); // Enable loop + IRQ
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(26352);
+    fam_apu_write_register(apu, 0x4013, 0x02); // Set sample length to 33
+    clock_apu(4320);
+    fam_apu_write_register(apu, 0x4010, 0x8F); // Disable loop
+    clock_apu(10000);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x80, "Test G: DMC IRQ flag (bit 7) should NOT be set yet - the reloaded sample is still playing after the loop flag is cleared");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x10, status & 0x10, "Test G: the reloaded 33-byte sample should still be playing (bit 4 set)");
+    clock_apu(4320);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, status & 0x80, "Test G: DMC IRQ flag (bit 7) should be set once the reloaded 33-byte sample finishes");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test G: DMC should have stopped (bit 4 clear) after the reloaded 33-byte sample plays out");
+
+    // Test H: Writing $00 to $4013 should result in the following sample being 1 byte long.
+    fam_apu_write_register(apu, 0x4010, 0x0F); // Disable IRQ and loop
+    fam_apu_write_register(apu, 0x4013, 0x00); // 1-byte sample
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    clock_apu(1728);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test H: a $00 write to $4013 makes a 1-byte sample, which should finish almost immediately (DMC stopped)");
+
+    // Test I: There should be a one-byte buffer that's filled immediately if empty.
+    fam_apu_write_register(apu, 0x4010, 0x8F); // Enable IRQ, fastest speed
+    fam_apu_write_register(apu, 0x4013, 0x01); // 17 byte sample
+    fam_apu_write_register(apu, 0x4015, 0x10);
+    // Wait until sample ends
+    do {
+        fam_apu_clock(apu);
+        fam_apu_read_register(apu, 0x4015, &status);
+        // TODO: Prevent infinite loop somehow
+    } while (status & 0x10);
+    clock_apu(1758);
+    fam_apu_write_register(apu, 0x4013, 0x00); // 1-byte sample
+    fam_apu_write_register(apu, 0x4015, 0x10); // Enable DMC again
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x80, status & 0x90, "Test I: after re-enabling, the 1-byte sample should have already ended with its IRQ set (status & 0x90 == 0x80)");
+    fam_apu_write_register(apu, 0x4015, 0x10); // Enable DMC again
+    fam_apu_read_register(apu, 0x4015, &status); // Should be playing
+    TEST_ASSERT_NOT_EQUAL_HEX8_MESSAGE(0x00, status, "Test I: re-enabling the DMC should start it playing again (status nonzero)");
+    clock_apu(1728);
+    fam_apu_read_register(apu, 0x4015, &status); // Now should be stopped
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x10, "Test I: the 1-byte sample should have stopped after playing out (bit 4 clear)");
+
+    // Test J: The DMA occurred on the wrong CPU cycle.
+    // Test K: The sample address should overflow to $8000 instead of $0000
+    // Test L: Writing to $4015 when the DMC timer has 2 cycles until clocked should not trigger a DMC DMA until after the 3 or 4 CPU cycle delay of writing to $4015.
+    // Test M: Writing to $4015 when the DMC timer has 1 cycle until clocked should not trigger a DMC DMA until after the 3 or 4 CPU cycle delay of writing to $4015.
+    // Test N: Writing to $4015 when the DMC timer has 0 cycles until clocked should not trigger a DMC DMA until after the 3 or 4 CPU cycle delay of writing to $4015.
+
+    // This is more precise timing stuff
+}
+
 void setUp(void) {
     fam_apu_init(&apu);
 }
@@ -272,5 +473,6 @@ int main(void) {
     RUN_TEST(test_length_counter_noise);
     RUN_TEST(test_length_table_noise);
     RUN_TEST(test_frame_counter_irq);
+    RUN_TEST(test_dmc);
     return UNITY_END();
 }
