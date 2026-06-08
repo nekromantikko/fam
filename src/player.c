@@ -28,6 +28,22 @@ struct FamPlayer {
     double accumulator;
 };
 
+static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
+    // TODO: "Bank switching" if we want more than 16KB of sample data
+    FamPlayer* player = (FamPlayer*)user_data;
+    if (player == NULL || player->music == NULL) {
+        return 0;
+    }
+
+    size_t ind = addr - 0xC000;
+    if (ind >= player->music->sample_data_size) {
+        return 0;
+    }
+
+    const uint8_t* sample_data = (uint8_t*)player->music + player->music->sample_data_offset;
+    return sample_data[ind];
+}
+
 static void player_process_frame(FamPlayer* player) {
     if (player->music == NULL || player->music_paused) {
         return;
@@ -54,8 +70,12 @@ static void player_process_frame(FamPlayer* player) {
             return;
         }
 
-        // $4015 and $4017 are owned by the player, ignore writes to them
-        if (addr == FAM_REGISTER_STATUS || addr == FAM_REGISTER_FRAME_COUNTER) {
+        // TODO: Once there is music and SFX playing at the same time,
+        // $4015 writes should be masked to not disable channels needed by other sounds
+        // $4015 writes need to be allowed in order to play DMC samples
+
+        // $4017 is owned by the player, ignore writes to it
+        if (addr == FAM_REGISTER_FRAME_COUNTER) {
             continue;
         }
         fam_apu_write_register(player->apu, addr, data);
@@ -88,6 +108,8 @@ FamResult fam_player_init(uint32_t sample_rate, FamPlayer** out_player) {
 
     player->apu = apu;
     player->sample_rate = sample_rate;
+
+    fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
 
     *out_player = player;
     return FAM_SUCCESS;

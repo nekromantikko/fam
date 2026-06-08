@@ -37,6 +37,14 @@ static const uint16_t NOISE_PERIOD_PAL[16] = {
     2, 4, 7, 15, 30, 44, 59, 74, 94, 118, 177, 236, 354, 472, 945, 1889
 };
 
+static const uint16_t DMC_RATE_NTSC[16] = {
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54
+};
+
+static const uint16_t DMC_RATE_PAL[16] = {
+    398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50
+};
+
 typedef struct PulseChannel {
     union {
         struct {
@@ -123,6 +131,41 @@ typedef struct NoiseChannel {
     uint8_t envelope_volume;
 } NoiseChannel;
 
+typedef struct DPCMChannel {
+    union {
+        struct {
+            uint8_t sample_rate : 4;
+            uint8_t unused0 : 2;
+            uint8_t loop : 1;
+            uint8_t enable_irq : 1;
+
+            uint8_t direct_load : 7;
+            uint8_t unused1 : 1; // Unused sign bit for direct load
+
+            uint8_t sample_address;
+
+            uint8_t sample_length;
+        };
+        uint8_t raw_registers[4];
+    };
+
+    uint16_t timer_counter;
+
+    uint16_t current_address;
+    uint16_t bytes_remaining;
+    uint8_t sample_buffer;
+    bool buffer_filled;
+
+    uint8_t shift_register;
+    uint8_t bits_remaining;
+
+    uint8_t output_level : 7;
+    uint8_t playing : 1;
+
+    FamDmcReadFn reader;
+    void* reader_data;
+} DPCMChannel;
+
 typedef struct StatusRegister {
     uint8_t enable_pulse1 : 1;
     uint8_t enable_pulse2 : 1;
@@ -138,7 +181,7 @@ struct FamApu {
     PulseChannel pulse[2];
     TriangleChannel triangle;
     NoiseChannel noise;
-    // DmcChannel dmc;
+    DPCMChannel dmc;
     union {
         StatusRegister status;
         uint8_t raw_status_register;
@@ -191,7 +234,10 @@ static void pulse_clock_length_counter(PulseChannel* pulse) {
 }
 
 static void pulse_clock_timer(PulseChannel* pulse) {
-    pulse->timer_counter--;
+    if (pulse->timer_counter > 0) {
+        pulse->timer_counter--;
+    }
+
     if (pulse->timer_counter == 0) {
         pulse->sequence_pos--;
         pulse->timer_counter = pulse->timer_period + 1;
@@ -229,7 +275,11 @@ static void triangle_clock_timer(TriangleChannel* triangle) {
     // NOTE: Triangle ticks at CPU clock rate (APU clock x2)
     for (int i = 0; i < 2; i++) {
         if (triangle->length_counter > 0 && triangle->linear_counter > 0) {
-            triangle->timer_counter--;
+
+            if (triangle->timer_counter > 0) {
+                triangle->timer_counter--;
+            }
+
             if (triangle->timer_counter == 0) {
                 triangle->sequence--;
                 triangle->timer_counter = triangle->timer_period + 1;
@@ -260,7 +310,10 @@ static void noise_clock_length_counter(NoiseChannel* noise) {
 }
 
 static void noise_clock_timer(NoiseChannel* noise) {
-    noise->timer_counter--;
+    if (noise->timer_counter > 0) {
+        noise->timer_counter--;
+    }
+
     if (noise->timer_counter == 0) {
         const uint8_t mode_bit_index = noise->mode ? 6 : 1;
         const uint8_t mode_bit = (uint8_t)noise->shift_register >> mode_bit_index;
@@ -281,6 +334,91 @@ static uint8_t noise_get_output(NoiseChannel* noise) {
 
     const uint8_t volume = noise->constant_volume ? noise->volume_envelope_period : noise->envelope_volume;
     return volume;
+}
+
+static void dmc_load_sample(DPCMChannel* dmc) {
+    dmc->current_address = 0xC000 + (dmc->sample_address << 6);
+    dmc->bytes_remaining = (dmc->sample_length << 4) + 1;
+}
+
+static bool dmc_try_fill_buffer(DPCMChannel* dmc) {
+    bool interrupt = false;
+    
+    if (!dmc->buffer_filled && dmc->bytes_remaining != 0) {
+        // TODO: Accurate CPU stall? From nesdev:
+        // "The CPU is stalled for 1-4 CPU cycles to read a sample byte."
+
+        if (dmc->reader != NULL) {
+            dmc->sample_buffer = dmc->reader(dmc->reader_data, dmc->current_address);
+        }
+        dmc->buffer_filled = true;
+
+        if (dmc->current_address == 0xFFFF) {
+            dmc->current_address = 0x8000;
+        } else {
+            dmc->current_address++;
+        }
+
+        dmc->bytes_remaining--;
+        if (dmc->bytes_remaining == 0) {
+            if (dmc->loop) {
+                dmc_load_sample(dmc);
+            } else if (dmc->enable_irq) {
+                interrupt = true;
+            }
+        }
+    }
+
+    return interrupt;
+}
+
+static bool dmc_clock_timer(DPCMChannel* dmc) {
+    bool interrupt = false;
+
+    // NOTE: DMC ticks at CPU rate
+    for (int i = 0; i < 2; i++) {
+        if (dmc->timer_counter > 0) {
+            dmc->timer_counter--;
+        }
+
+        // DMA reader
+        interrupt |= dmc_try_fill_buffer(dmc);
+
+        // Output unit
+        if (dmc->timer_counter == 0) {
+            if (dmc->playing) {
+                if (dmc->shift_register & 1) {
+                    if (dmc->output_level <= 125) {
+                        dmc->output_level += 2;
+                    }
+                } else if (dmc->output_level >= 2) {
+                    dmc->output_level -= 2;
+                }
+            }
+
+            dmc->shift_register >>= 1;
+
+            if (dmc->bits_remaining > 0) {
+                dmc->bits_remaining--;
+            }
+
+            if (dmc->bits_remaining == 0) {
+                dmc->bits_remaining = 8;
+                if (!dmc->buffer_filled) {
+                    dmc->playing = false;
+                } else {
+                    dmc->playing = true;
+                    dmc->shift_register = dmc->sample_buffer;
+                    dmc->buffer_filled = false;
+                }
+            }
+
+            // TODO: PAL support
+            dmc->timer_counter = DMC_RATE_NTSC[dmc->sample_rate];
+        }
+    }
+
+    return interrupt;
 }
 
 static void apu_clock_quarter_frame(FamApu* apu) {
@@ -393,6 +531,26 @@ static void apu_write_noise_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
+static void apu_write_dmc_register(FamApu* apu, int offset, uint8_t data) {
+    DPCMChannel* dmc = &apu->dmc;
+    dmc->raw_registers[offset] = data;
+
+    switch (offset) {
+        case 0:
+            if (!dmc->enable_irq) {
+                apu->status.dmc_interrupt = false;
+            }
+            break;
+        case 1:
+            dmc->output_level = dmc->direct_load;
+            break;
+        case 2:
+        case 3:
+        default:
+            break;
+    }
+}
+
 FamResult fam_apu_init(FamApu** out_apu) {
     if (out_apu == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
@@ -449,9 +607,19 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             apu_write_noise_register(apu, offset, data);
             break;
         }
+        case FAM_REGISTER_DMC_FLAGS:
+        case FAM_REGISTER_DMC_LOAD:
+        case FAM_REGISTER_DMC_ADDRESS:
+        case FAM_REGISTER_DMC_LENGTH: {
+            int offset = (int)reg - FAM_REGISTER_DMC_FLAGS;
+            apu_write_dmc_register(apu, offset, data);
+            break;
+        }
         case FAM_REGISTER_STATUS: {
             // Only set first 5 bits
             apu->raw_status_register = (apu->raw_status_register & 0b11100000) | (data & 0b00011111);
+            // Always clear DMC IRQ
+            apu->status.dmc_interrupt = false;
             if (!apu->status.enable_pulse1) {
                 apu->pulse->length_counter = 0;
             }
@@ -464,7 +632,12 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             if (!apu->status.enable_noise) {
                 apu->noise.length_counter = 0;
             }
-            // TODO: Handle other side-effects
+            if (!apu->status.enable_dmc) {
+                apu->dmc.bytes_remaining = 0;
+            } else if (apu->dmc.bytes_remaining == 0) {
+                dmc_load_sample(&apu->dmc);
+                apu->status.dmc_interrupt |= dmc_try_fill_buffer(&apu->dmc);
+            }
             break;
         }
         case FAM_REGISTER_FRAME_COUNTER: {
@@ -509,12 +682,13 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
         case FAM_REGISTER_NOISE_LOAD:
             return FAM_ERROR_WRITE_ONLY;
         case FAM_REGISTER_STATUS: {
-            // Keep bit 5 as it was
+            // Keep bit 5 as it was (Open bus approximation)
             *out_data = (*out_data & 0b00100000) | (apu->raw_status_register & 0b11011111);
             if (apu->pulse[0].length_counter == 0) *out_data &= 0b11111110;
             if (apu->pulse[1].length_counter == 0) *out_data &= 0b11111101;
             if (apu->triangle.length_counter == 0) *out_data &= 0b11111011;
             if (apu->noise.length_counter == 0) *out_data &= 0b11110111;
+            if (apu->dmc.bytes_remaining == 0) *out_data &= 0b11101111;
             apu->status.frame_interrupt = 0;
             break;
         }
@@ -525,6 +699,11 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
     }
 
     return FAM_SUCCESS;
+}
+
+void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data) {
+    apu->dmc.reader = reader;
+    apu->dmc.reader_data = user_data;
 }
 
 void fam_apu_clock(FamApu* apu) {
@@ -548,6 +727,7 @@ void fam_apu_clock(FamApu* apu) {
     pulse_clock_timer(apu->pulse + 1);
     triangle_clock_timer(&apu->triangle);
     noise_clock_timer(&apu->noise);
+    apu->status.dmc_interrupt |= dmc_clock_timer(&apu->dmc);
 }
 
 void fam_apu_get_sample(FamApu* apu, void* out_sample) {
@@ -562,7 +742,7 @@ void fam_apu_get_sample(FamApu* apu, void* out_sample) {
     float tnd_out = 0.0f;
     uint8_t triangle = triangle_get_output(&apu->triangle);
     uint8_t noise = noise_get_output(&apu->noise);
-    uint8_t dmc = 0;
+    uint8_t dmc = apu->dmc.output_level;
 
     if (triangle != 0 || noise != 0 || dmc != 0) {
         tnd_out = 159.79f / (1 / ((float)triangle / 8227 + (float)noise / 12241 + (float)dmc / 22638) + 100);

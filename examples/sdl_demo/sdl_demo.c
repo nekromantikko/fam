@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <SDL3/SDL.h>
 #include <fam/player.h>
@@ -40,6 +41,33 @@ static const uint8_t arpeggio_data[] = {
     0x00, 0x00, 0x1D,  // ENDFRAME, skip 29
 };
 
+static FamMusic* load_fmb(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        printf("Failed to open: %s\n", path);
+        return NULL;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+
+    FamMusic* music = (FamMusic*)malloc(size);
+    if (music == NULL) {
+        fclose(f);
+        return NULL;
+    }
+
+    if (fread(music, 1, size, f) != (size_t)size) {
+        free(music);
+        fclose(f);
+        return NULL;
+    }
+
+    fclose(f);
+    return music;
+}
+
 static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
     FamPlayer* player = (FamPlayer*)userdata;
 
@@ -77,17 +105,27 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    fam_player_play_music(player, (FamMusic*)arpeggio_data);
+    FamMusic* loaded = NULL;
+    if (argc > 1) {
+        loaded = load_fmb(argv[1]);
+        if (loaded == NULL) {
+            printf("Failed to load FMB, falling back to arpeggio\n");
+        }
+    }
+
+    const FamMusic* music = loaded ? loaded : (const FamMusic*)arpeggio_data;
+    fam_player_play_music(player, music);
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing C major arpeggio...\n");
+    printf("Playing... (close window or wait for song to end)\n");
 
-    SDL_Delay(3000);
+    SDL_Delay(loaded ? 60000 : 3000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
     fam_player_free(player);
+    free(loaded);
 
     return 0;
 }
