@@ -49,6 +49,10 @@ The library currently assumes a **little-endian** architecture. Big-endian archi
 
 ## Roadmap
 
+### APU
+
+- [ ] PAL support
+
 ### Audio Player
 
  - [ ] Thread-safe command buffer for the player (Play, pause, stop etc.) using C11 atomics
