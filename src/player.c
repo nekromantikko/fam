@@ -5,15 +5,57 @@
 
 #define NO_LOOP UINT64_MAX
 
-#define ADDR_ENDFRAME 0x0000
+typedef enum {
+    CHAN_PULSE1             = 1,
+    CHAN_PULSE2             = 1 << 1,
+    CHAN_TRIANGLE           = 1 << 2,
+    CHAN_NOISE              = 1 << 3,
+    CHAN_DMC                = 1 << 4,
+} ChannelFlags;
 
-#define RECORD_SIZE 3
+typedef enum {
+    OP_PULSE1_WRITE0        = 0x0,
+    OP_PULSE1_WRITE1        = 0x1,
+    OP_PULSE1_WRITE2        = 0x2,
+    OP_PULSE1_WRITE3        = 0x3,
+
+    OP_PULSE2_WRITE0        = 0x4,
+    OP_PULSE2_WRITE1        = 0x5,
+    OP_PULSE2_WRITE2        = 0x6,
+    OP_PULSE2_WRITE3        = 0x7,
+
+    OP_TRIANGLE_WRITE0      = 0x8,
+    OP_TRIANGLE_WRITE1      = 0x9,
+    OP_TRIANGLE_WRITE2      = 0xA,
+    OP_TRIANGLE_WRITE3      = 0xB,
+
+    OP_NOISE_WRITE0         = 0xC,
+    OP_NOISE_WRITE1         = 0xD,
+    OP_NOISE_WRITE2         = 0xE,
+    OP_NOISE_WRITE3         = 0xF,
+
+    OP_DMC_WRITE0           = 0x10,
+    OP_DMC_WRITE1           = 0x11,
+    OP_DMC_WRITE2           = 0x12,
+    OP_DMC_WRITE3           = 0x13,
+
+    OP_DMC_PLAY_SAMPLE      = 0x14,
+
+    OP_ENDFRAME             = 0xFE,
+    OP_ENDSTREAM            = 0xFF,
+} StreamOpCode;
+
+typedef struct StreamOperation {
+    uint8_t opcode;
+    uint8_t data;
+} StreamOperation;
 
 struct FamMusic {
+    uint64_t channel_mask;
     uint64_t sample_data_size;
     uint64_t sample_data_offset;
-    uint64_t record_count;
-    uint64_t record_offset;
+    uint64_t stream_op_count;
+    uint64_t stream_offset;
     uint64_t loop_point;
 };
 
@@ -54,38 +96,96 @@ static void player_process_frame(FamPlayer* player) {
         return;
     }
 
-    const uint8_t* record_data = (uint8_t*)player->music + player->music->record_offset; 
+    const StreamOperation* stream_data = (StreamOperation*)((uint8_t*)player->music + player->music->stream_offset); 
 
-    while (player->music_pos < player->music->record_count) {
-        static uint8_t record[RECORD_SIZE];
-        memcpy(record, record_data + player->music_pos * RECORD_SIZE, RECORD_SIZE);
+    while (player->music_pos < player->music->stream_op_count) {
+        StreamOperation op = stream_data[player->music_pos++];
 
-        uint16_t addr = (uint16_t)record[0] |
-                        ((uint16_t)record[1] << 8);
-        uint8_t data = record[2];
-        player->music_pos++;
+        switch(op.opcode) {
+            case OP_PULSE1_WRITE0:
+                fam_apu_write_register(player->apu, 0x4000, op.data);
+                break;
+            case OP_PULSE1_WRITE1:
+                fam_apu_write_register(player->apu, 0x4001, op.data);
+                break;
+            case OP_PULSE1_WRITE2:
+                fam_apu_write_register(player->apu, 0x4002, op.data);
+                break;
+            case OP_PULSE1_WRITE3:
+                fam_apu_write_register(player->apu, 0x4003, op.data);
+                break;
+            
+            case OP_PULSE2_WRITE0:
+                fam_apu_write_register(player->apu, 0x4004, op.data);
+                break;
+            case OP_PULSE2_WRITE1:
+                fam_apu_write_register(player->apu, 0x4005, op.data);
+                break;
+            case OP_PULSE2_WRITE2:
+                fam_apu_write_register(player->apu, 0x4006, op.data);
+                break;
+            case OP_PULSE2_WRITE3:
+                fam_apu_write_register(player->apu, 0x4007, op.data);
+                break;
 
-        if (addr == ADDR_ENDFRAME) {
-            player->music_skip_counter = data;
-            return;
+            case OP_TRIANGLE_WRITE0:
+                fam_apu_write_register(player->apu, 0x4008, op.data);
+                break;
+            case OP_TRIANGLE_WRITE1:
+                fam_apu_write_register(player->apu, 0x4009, op.data);
+                break;
+            case OP_TRIANGLE_WRITE2:
+                fam_apu_write_register(player->apu, 0x400A, op.data);
+                break;
+            case OP_TRIANGLE_WRITE3:
+                fam_apu_write_register(player->apu, 0x400B, op.data);
+                break;
+
+            case OP_NOISE_WRITE0:
+                fam_apu_write_register(player->apu, 0x400C, op.data);
+                break;
+            case OP_NOISE_WRITE1:
+                fam_apu_write_register(player->apu, 0x400D, op.data);
+                break;
+            case OP_NOISE_WRITE2:
+                fam_apu_write_register(player->apu, 0x400E, op.data);
+                break;
+            case OP_NOISE_WRITE3:
+                fam_apu_write_register(player->apu, 0x400F, op.data);
+                break;
+
+            case OP_DMC_WRITE0:
+                fam_apu_write_register(player->apu, 0x4010, op.data);
+                break;
+            case OP_DMC_WRITE1:
+                fam_apu_write_register(player->apu, 0x4011, op.data);
+                break;
+            case OP_DMC_WRITE2:
+                fam_apu_write_register(player->apu, 0x4012, op.data);
+                break;
+            case OP_DMC_WRITE3:
+                fam_apu_write_register(player->apu, 0x4013, op.data);
+                break;
+
+            case OP_DMC_PLAY_SAMPLE:
+                fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, player->music->channel_mask & 0xFF);
+                break;
+
+            case OP_ENDFRAME:
+                player->music_skip_counter = op.data;
+                return;
+            
+            case OP_ENDSTREAM:
+                goto endstream;
         }
-
-        // TODO: Once there is music and SFX playing at the same time,
-        // $4015 writes should be masked to not disable channels needed by other sounds
-        // $4015 writes need to be allowed in order to play DMC samples
-
-        // $4017 is owned by the player, ignore writes to it
-        if (addr == FAM_REGISTER_FRAME_COUNTER) {
-            continue;
-        }
-        fam_apu_write_register(player->apu, addr, data);
     }
 
-    // End of song reached
-    if (player->music->loop_point == NO_LOOP) {
+endstream:
+
+    // End of song reached (Or loop point out of bounds)
+    if (player->music->loop_point == NO_LOOP || player->music->loop_point >= player->music->stream_op_count) {
         fam_player_stop_music(player);
     } else {
-        // TODO: Validate that loop point is < record_count!
         player->music_pos = player->music->loop_point;
     }
 }
@@ -152,8 +252,7 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     player->music_skip_counter = 0;
     player->music_paused = false;
 
-    // TODO: Channel mask for only enabling specific channels
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, 0x1F);
+    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, music->channel_mask & 0xFF);
     fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x00);
 }
 
