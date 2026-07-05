@@ -1,9 +1,37 @@
 #include <stdio.h>
 #include <math.h>
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_atomic.h>
 #include <fam/player.h>
 
 #define SAMPLE_RATE 44100
+#define CMD_BUFFER_CAPACITY 256 // NOTE: Must be power of 2!
+#define MAX_CMD_PER_CALLBACK 16
+
+typedef enum {
+    CMD_MUSIC_PLAY,
+    CMD_MUSIC_PAUSE,
+    CMD_MUSIC_RESUME,
+    CMD_MUSIC_STOP,
+    CMD_SFX_PLAY,
+} PlayerCommandType;
+
+typedef struct PlayerCommand {
+    PlayerCommandType type;
+    const void* ptr;
+} PlayerCommand;
+
+// SPSC ring buffer, producer increments tail, consumer increments head
+typedef struct CommandBuffer {
+    PlayerCommand buffer[CMD_BUFFER_CAPACITY];
+    SDL_AtomicU32 head;
+    SDL_AtomicU32 tail;
+} CommandBuffer;
+
+typedef struct CallbackData {
+    FamPlayer* player;
+    CommandBuffer* cmd_buffer;
+} CallbackData;
 
 static const uint8_t music_data[] = {
     // Header (40 bytes)
@@ -331,24 +359,150 @@ static const uint8_t music_data[] = {
     0xFF, 0x00, // ENDSTREAM
 };
 
+static const uint8_t sfx_pulse1[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Channel ID
+    0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream operation count
+    0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream offset
+
+    // --- FRAME 1 ---
+    0x0, 0x8C, // 1000 1100 -> 50% duty, constant volume, volume 12
+    0x2, 0x7E, // Low 8 bits of timer for A-5 (Timer: 0x17E)
+    0x3, 0x01, // High 3 bits of timer (0x01) + length counter load
+    0xFE,      0x02, // Wait 3 frames total (Skip 2 extra frames)
+
+    // --- FRAME 4 ---
+    0x2, 0xFE, // Low 8 bits of timer for E-6 (Timer: 0x0FE)
+    0x3, 0x00, // High 3 bits of timer (0x00)
+    0xFE,      0x02, // Wait 3 frames total (Skip 2 extra frames)
+
+    // --- FRAME 7 ---
+    0x2, 0xBE, // Low 8 bits of timer for A-6 (Timer: 0x0BE)
+    0x3, 0x00, // High 3 bits of timer (0x00)
+    0xFE,      0x07, // Let the final note ring out for 8 frames (Skip 7 extra)
+
+    // --- END ---
+    0x0, 0x30, // Silence the channel (Volume 0)
+    0xFF,     0x00  // End of SFX data
+};
+
+static const uint8_t sfx_triangle[] = {
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Channel ID
+    0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream operation count
+    0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream offset
+
+    // --- FRAME 1 ---
+    0x8, 0x81, // Control flag set (no halt), linear counter = 1
+    0xA, 0x40, // Low 8 bits of timer (Timer: 0x040)
+    0xB, 0x00, // High 3 bits of timer
+    0xFE,        0x00, // Wait 1 frame
+
+    // --- FRAME 2 ---
+    0xA, 0x80, // Pitch slide down (Timer: 0x080)
+    0xFE,        0x00, 
+
+    // --- FRAME 3 ---
+    0xA, 0xC0, // Pitch slide down (Timer: 0x0C0)
+    0xFE,        0x00, 
+
+    // --- FRAME 4 ---
+    0xA, 0x00, // Pitch slide down (Timer: 0x100)
+    0xB, 0x01, 
+    0xFE,        0x00, 
+
+    // --- FRAME 5 ---
+    0xA, 0x60, // Pitch slide down (Timer: 0x160)
+    0xFE,        0x00, 
+
+    // --- END ---
+    0x8, 0x00, // Clear linear counter to silence Triangle
+    0xFF,       0x00
+};
+
+static bool cmd_buffer_push(CommandBuffer* cb, PlayerCommandType type, const void* ptr) {
+    uint32_t tail = cb->tail.value;
+    uint32_t head = SDL_GetAtomicU32(&cb->head);
+
+    if (tail - head >= CMD_BUFFER_CAPACITY) return false; // Full
+
+    const PlayerCommand cmd = {
+        .type = type,
+        .ptr = ptr
+    };
+    cb->buffer[tail & (CMD_BUFFER_CAPACITY - 1)] = cmd;
+    SDL_SetAtomicU32(&cb->tail, tail + 1);
+    return true;
+}
+
+static bool cmd_buffer_pop(CommandBuffer* cb, PlayerCommand* out_cmd) {
+    uint32_t head = cb->head.value;
+    uint32_t tail = SDL_GetAtomicU32(&cb->tail);
+
+    if (head == tail) return false; // Empty
+
+    *out_cmd = cb->buffer[head & (CMD_BUFFER_CAPACITY - 1)];
+    SDL_SetAtomicU32(&cb->head, head + 1);
+    return true;
+}
+
+static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer) {
+    PlayerCommand cmd;
+
+    for (int i = 0; i < MAX_CMD_PER_CALLBACK; i++) {
+        if (!cmd_buffer_pop(cmd_buffer, &cmd)) {
+            break;
+        }
+
+        switch(cmd.type) {
+            case CMD_MUSIC_PLAY:
+                fam_player_play_music(player, (FamMusic*)cmd.ptr);
+                break;
+            case CMD_MUSIC_PAUSE:
+                fam_player_pause_music(player);
+                break;
+            case CMD_MUSIC_RESUME:
+                fam_player_resume_music(player);
+                break;
+            case CMD_MUSIC_STOP:
+                fam_player_stop_music(player);
+                break;
+            case CMD_SFX_PLAY:
+                fam_player_play_sfx(player, (FamSfx*)cmd.ptr);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
-    FamPlayer* player = (FamPlayer*)userdata;
+    CallbackData* callback_data = (CallbackData*)userdata;
+
+    process_player_commands(callback_data->player, callback_data->cmd_buffer);
 
     int num_samples = additional_amount / sizeof(float);
     for (int i = 0; i < num_samples; i++) {
         static float sample;
-        fam_player_process_samples(player, 1, &sample);
+        fam_player_process_samples(callback_data->player, 1, &sample);
         SDL_PutAudioStreamData(stream, &sample, sizeof(float));
     }
 }
 
 int main(int argc, char **argv) {
     FamPlayer* player;
-    FamResult err = fam_player_init(SAMPLE_RATE, &player);
+    FamResult err = fam_player_init(&player, SAMPLE_RATE);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;
     }
+
+    CommandBuffer cmd_buffer;
+    cmd_buffer.head.value = 0;
+    cmd_buffer.tail.value = 0;
+
+    CallbackData callback_data = {
+        .player = player,
+        .cmd_buffer = &cmd_buffer
+    };
 
     if (!SDL_Init(SDL_INIT_AUDIO)) {
         printf("Error initializing SDL: %s\n", SDL_GetError());
@@ -361,19 +515,37 @@ int main(int argc, char **argv) {
         .freq     = SAMPLE_RATE,
     };
 
-    SDL_AudioStream *stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, player);
+    SDL_AudioStream *stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, &callback_data);
     if (!stream) {
         printf("Error opening audio device: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
 
-    fam_player_play_music(player, (FamMusic*)music_data);
-
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing sample song...\n");
+    printf("Playing sample song with layered SFX...\n");
 
-    SDL_Delay(6000);
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music_data);
+
+    SDL_Delay(1000);
+
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
+
+    SDL_Delay(250);
+
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+
+    SDL_Delay(500);
+
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
+
+    SDL_Delay(1000);
+
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+
+    SDL_Delay(2000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
