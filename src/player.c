@@ -1,16 +1,28 @@
 ﻿#include <fam/player.h>
 #include <fam/apu.h>
+#include <fam/util.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define NO_LOOP UINT64_MAX
+#define SFX_CHANNEL_COUNT 4
 
 typedef enum {
-    CHAN_PULSE1             = 1,
-    CHAN_PULSE2             = 1 << 1,
-    CHAN_TRIANGLE           = 1 << 2,
-    CHAN_NOISE              = 1 << 3,
-    CHAN_DMC                = 1 << 4,
+    CHAN_ID_PULSE1             = 0,
+    CHAN_ID_PULSE2,
+    CHAN_ID_TRIANGLE,
+    CHAN_ID_NOISE,
+    CHAN_ID_DMC,
+
+    CHAN_COUNT,
+} ChannelId;
+
+typedef enum {
+    CHAN_BIT_PULSE1             = 1 << CHAN_ID_PULSE1,
+    CHAN_BIT_PULSE2             = 1 << CHAN_ID_PULSE2,
+    CHAN_BIT_TRIANGLE           = 1 << CHAN_ID_TRIANGLE,
+    CHAN_BIT_NOISE              = 1 << CHAN_ID_NOISE,
+    CHAN_BIT_DMC                = 1 << CHAN_ID_DMC,
 } ChannelFlags;
 
 typedef enum {
@@ -59,16 +71,107 @@ struct FamMusic {
     uint64_t loop_point;
 };
 
+struct FamSfx {
+    uint64_t channel_id;
+    uint64_t stream_op_count;
+    uint64_t stream_offset;
+};
+
 struct FamPlayer {
     FamApu* apu;
     uint32_t sample_rate;
+
     const FamMusic* music;
     size_t music_pos;
     uint8_t music_skip_counter;
     bool music_paused;
 
+    // Shadow state to track the music's "real" register state
+    uint8_t reserve_pulse1[4];
+    uint8_t reserve_pulse2[4];
+    uint8_t reserve_triangle[4];
+    uint8_t reserve_noise[4];
+    uint8_t reserve_dmc[4];
+
+    const FamSfx* sfx[SFX_CHANNEL_COUNT];
+    size_t sfx_pos[SFX_CHANNEL_COUNT];
+    uint8_t sfx_skip_counter[SFX_CHANNEL_COUNT];
+
     double accumulator;
+    double cycle_counter;
 };
+
+static void player_clear_reserve(FamPlayer* player) {
+    memset(player->reserve_pulse1, 0, 4);
+    memset(player->reserve_pulse2, 0, 4);
+    memset(player->reserve_triangle, 0, 4);
+    memset(player->reserve_noise, 0, 4);
+    memset(player->reserve_dmc, 0, 4);
+}
+
+// NOTE: This will retrigger notes by loading the length counters! Use only if necessary (Like after a sound effect stops)
+// TODO: A more sophisticated function that avoids reloading length counters if possible
+static void player_restore_reserve(FamPlayer* player, int channel) {
+    switch(channel) {
+        case CHAN_ID_PULSE1:
+            fam_apu_write_register(player->apu, 0x4000, player->reserve_pulse1[0]);
+            fam_apu_write_register(player->apu, 0x4001, player->reserve_pulse1[1]);
+            fam_apu_write_register(player->apu, 0x4002, player->reserve_pulse1[2]);
+            fam_apu_write_register(player->apu, 0x4003, player->reserve_pulse1[3]);
+            break;
+        case CHAN_ID_PULSE2:
+            fam_apu_write_register(player->apu, 0x4004, player->reserve_pulse2[0]);
+            fam_apu_write_register(player->apu, 0x4005, player->reserve_pulse2[1]);
+            fam_apu_write_register(player->apu, 0x4006, player->reserve_pulse2[2]);
+            fam_apu_write_register(player->apu, 0x4007, player->reserve_pulse2[3]);
+            break;
+        case CHAN_ID_TRIANGLE:
+            fam_apu_write_register(player->apu, 0x4008, player->reserve_triangle[0]);
+            fam_apu_write_register(player->apu, 0x4009, player->reserve_triangle[1]);
+            fam_apu_write_register(player->apu, 0x400A, player->reserve_triangle[2]);
+            fam_apu_write_register(player->apu, 0x400B, player->reserve_triangle[3]);
+            break;
+        case CHAN_ID_NOISE:
+            fam_apu_write_register(player->apu, 0x400C, player->reserve_noise[0]);
+            fam_apu_write_register(player->apu, 0x400D, player->reserve_noise[1]);
+            fam_apu_write_register(player->apu, 0x400E, player->reserve_noise[2]);
+            fam_apu_write_register(player->apu, 0x400F, player->reserve_noise[3]);
+            break;
+        case CHAN_ID_DMC:
+            fam_apu_write_register(player->apu, 0x4010, player->reserve_dmc[0]);
+            fam_apu_write_register(player->apu, 0x4011, player->reserve_dmc[1]);
+            fam_apu_write_register(player->apu, 0x4012, player->reserve_dmc[2]);
+            fam_apu_write_register(player->apu, 0x4013, player->reserve_dmc[3]);
+            break;
+        default:
+            break;
+    }
+}
+
+static void player_update_status_register(FamPlayer* player) {
+    uint8_t status = 0;
+
+    if (player->music != NULL) {
+        status |= player->music->channel_mask & 0x1F;
+    }
+
+    for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
+        if (player->sfx[i] != NULL) {
+            status |= 1 << i;
+        }
+    }
+
+    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, status);
+}
+
+static void player_silence_music(FamPlayer* player) {
+    // Mute pulses and noise by setting volume to 0 ($4000, $4004, $400C)
+    if (player->sfx[CHAN_ID_PULSE1] == NULL) fam_apu_write_register(player->apu, 0x4000, 0x30);
+    if (player->sfx[CHAN_ID_PULSE2] == NULL) fam_apu_write_register(player->apu, 0x4004, 0x30);
+    if (player->sfx[CHAN_ID_NOISE] == NULL) fam_apu_write_register(player->apu, 0x400C, 0x30);
+    // Mute triangle by setting linear counter to 0 and halting ($4008)
+    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) fam_apu_write_register(player->apu, 0x4008, 0x80);
+}
 
 static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
     // TODO: "Bank switching" if we want more than 16KB of sample data
@@ -86,7 +189,7 @@ static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
     return sample_data[ind];
 }
 
-static void player_process_frame(FamPlayer* player) {
+static void player_process_music(FamPlayer* player) {
     if (player->music == NULL || player->music_paused) {
         return;
     }
@@ -103,72 +206,65 @@ static void player_process_frame(FamPlayer* player) {
 
         switch(op.opcode) {
             case OP_PULSE1_WRITE0:
-                fam_apu_write_register(player->apu, 0x4000, op.data);
-                break;
             case OP_PULSE1_WRITE1:
-                fam_apu_write_register(player->apu, 0x4001, op.data);
-                break;
             case OP_PULSE1_WRITE2:
-                fam_apu_write_register(player->apu, 0x4002, op.data);
-                break;
             case OP_PULSE1_WRITE3:
-                fam_apu_write_register(player->apu, 0x4003, op.data);
-                break;
-            
+                {
+                    int offset = op.opcode - OP_PULSE1_WRITE0;
+                    player->reserve_pulse1[offset] = op.data;
+                    if (player->sfx[CHAN_ID_PULSE1] == NULL) {
+                        fam_apu_write_register(player->apu, 0x4000 + offset, op.data);
+                    }
+                    break;
+                }
             case OP_PULSE2_WRITE0:
-                fam_apu_write_register(player->apu, 0x4004, op.data);
-                break;
             case OP_PULSE2_WRITE1:
-                fam_apu_write_register(player->apu, 0x4005, op.data);
-                break;
             case OP_PULSE2_WRITE2:
-                fam_apu_write_register(player->apu, 0x4006, op.data);
-                break;
             case OP_PULSE2_WRITE3:
-                fam_apu_write_register(player->apu, 0x4007, op.data);
-                break;
-
+                {
+                    int offset = op.opcode - OP_PULSE2_WRITE0;
+                    player->reserve_pulse2[offset] = op.data;
+                    if (player->sfx[CHAN_ID_PULSE2] == NULL) {
+                        fam_apu_write_register(player->apu, 0x4004 + offset, op.data);
+                    }
+                    break;
+                }
             case OP_TRIANGLE_WRITE0:
-                fam_apu_write_register(player->apu, 0x4008, op.data);
-                break;
             case OP_TRIANGLE_WRITE1:
-                fam_apu_write_register(player->apu, 0x4009, op.data);
-                break;
             case OP_TRIANGLE_WRITE2:
-                fam_apu_write_register(player->apu, 0x400A, op.data);
-                break;
             case OP_TRIANGLE_WRITE3:
-                fam_apu_write_register(player->apu, 0x400B, op.data);
-                break;
-
+                {
+                    int offset = op.opcode - OP_TRIANGLE_WRITE0;
+                    player->reserve_triangle[offset] = op.data;
+                    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) {
+                        fam_apu_write_register(player->apu, 0x4008 + offset, op.data);
+                    }
+                    break;
+                }
             case OP_NOISE_WRITE0:
-                fam_apu_write_register(player->apu, 0x400C, op.data);
-                break;
             case OP_NOISE_WRITE1:
-                fam_apu_write_register(player->apu, 0x400D, op.data);
-                break;
             case OP_NOISE_WRITE2:
-                fam_apu_write_register(player->apu, 0x400E, op.data);
-                break;
             case OP_NOISE_WRITE3:
-                fam_apu_write_register(player->apu, 0x400F, op.data);
-                break;
-
+                {
+                    int offset = op.opcode - OP_NOISE_WRITE0;
+                    player->reserve_noise[offset] = op.data;
+                    if (player->sfx[CHAN_ID_NOISE] == NULL) {
+                        fam_apu_write_register(player->apu, 0x400C + offset, op.data);
+                    }
+                    break;
+                }
             case OP_DMC_WRITE0:
-                fam_apu_write_register(player->apu, 0x4010, op.data);
-                break;
             case OP_DMC_WRITE1:
-                fam_apu_write_register(player->apu, 0x4011, op.data);
-                break;
             case OP_DMC_WRITE2:
-                fam_apu_write_register(player->apu, 0x4012, op.data);
-                break;
             case OP_DMC_WRITE3:
-                fam_apu_write_register(player->apu, 0x4013, op.data);
-                break;
-
+                {
+                    int offset = op.opcode - OP_DMC_WRITE0;
+                    player->reserve_dmc[offset] = op.data;
+                    fam_apu_write_register(player->apu, 0x4010 + offset, op.data);
+                    break;
+                }
             case OP_DMC_PLAY_SAMPLE:
-                fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, player->music->channel_mask & 0xFF);
+                player_update_status_register(player);
                 break;
 
             case OP_ENDFRAME:
@@ -177,6 +273,9 @@ static void player_process_frame(FamPlayer* player) {
             
             case OP_ENDSTREAM:
                 goto endstream;
+
+            default:
+                break;
         }
     }
 
@@ -190,29 +289,149 @@ endstream:
     }
 }
 
-FamResult fam_player_init(uint32_t sample_rate, FamPlayer** out_player) {
+static void player_process_sfx(FamPlayer* player, int channel) {
+    const FamSfx* sfx = player->sfx[channel];
+
+    if (sfx == NULL) return;
+
+    if (player->sfx_skip_counter[channel] > 0) {
+        player->sfx_skip_counter[channel]--;
+        return;
+    }
+
+    const StreamOperation* stream_data = (StreamOperation*)((uint8_t*)sfx + sfx->stream_offset);
+
+    while (player->sfx_pos[channel] < sfx->stream_op_count) {
+        StreamOperation op = stream_data[player->sfx_pos[channel]++];
+
+        switch(op.opcode) {
+            case OP_PULSE1_WRITE0:
+            case OP_PULSE1_WRITE1:
+            case OP_PULSE1_WRITE2:
+            case OP_PULSE1_WRITE3:
+                {
+                    if (channel != CHAN_ID_PULSE1) break;
+
+                    int offset = op.opcode - OP_PULSE1_WRITE0;
+                    fam_apu_write_register(player->apu, 0x4000 + offset, op.data);
+                    break;
+                }
+            case OP_PULSE2_WRITE0:
+            case OP_PULSE2_WRITE1:
+            case OP_PULSE2_WRITE2:
+            case OP_PULSE2_WRITE3:
+                {
+                    if (channel != CHAN_ID_PULSE2) break;
+
+                    int offset = op.opcode - OP_PULSE2_WRITE0;
+                    fam_apu_write_register(player->apu, 0x4004 + offset, op.data);
+                    break;
+                }
+            case OP_TRIANGLE_WRITE0:
+            case OP_TRIANGLE_WRITE1:
+            case OP_TRIANGLE_WRITE2:
+            case OP_TRIANGLE_WRITE3:
+                {
+                    if (channel != CHAN_ID_TRIANGLE) break;
+
+                    int offset = op.opcode - OP_TRIANGLE_WRITE0;
+                    fam_apu_write_register(player->apu, 0x4008 + offset, op.data);
+                    break;
+                }
+            case OP_NOISE_WRITE0:
+            case OP_NOISE_WRITE1:
+            case OP_NOISE_WRITE2:
+            case OP_NOISE_WRITE3:
+                {
+                    if (channel != CHAN_ID_NOISE) break;
+
+                    int offset = op.opcode - OP_NOISE_WRITE0;
+                    fam_apu_write_register(player->apu, 0x400C + offset, op.data);
+                    break;
+                }
+            case OP_DMC_WRITE0:
+            case OP_DMC_WRITE1:
+            case OP_DMC_WRITE2:
+            case OP_DMC_WRITE3:
+            case OP_DMC_PLAY_SAMPLE:
+                break;
+
+            case OP_ENDFRAME:
+                player->sfx_skip_counter[channel] = op.data;
+                return;
+            
+            case OP_ENDSTREAM:
+                goto endstream;
+            
+            default:
+                break;
+        }
+    }
+
+endstream:
+
+    player->sfx[channel] = NULL;
+    player_update_status_register(player);
+    player_restore_reserve(player, channel);
+
+    // Re-mute paused music after reserve restore
+    if (player->music_paused) {
+        player_silence_music(player);
+    }
+}
+
+static void player_process_frame(FamPlayer* player) {
+    player_process_music(player);
+    
+    for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
+        player_process_sfx(player, i);
+    }
+}
+
+FamResult fam_player_init(FamPlayer** out_player, uint32_t sample_rate) {
     if (out_player == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
-    FamApu* apu;
-    FamResult err = fam_apu_init(&apu);
-    if (err != FAM_SUCCESS) {
-        return err;
+    FamApu* apu = NULL;
+    FamPlayer* player = NULL;
+
+    FamResult error = FAM_ERROR_UNKNOWN;
+
+    player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
+    if (player == NULL) {
+        error = FAM_ERROR_OUT_OF_MEMORY;
+        goto error_cleanup;
     }
 
-    FamPlayer* player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
-    if (player == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+    player->sample_rate = sample_rate;
+    player->accumulator = 0.0;
+    player->cycle_counter = 0.0;
+    player->music = NULL;
+    memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
+
+    FamResult err = fam_apu_init(&apu);
+    if (err != FAM_SUCCESS) {
+        error = err;
+        goto error_cleanup;
     }
 
     player->apu = apu;
-    player->sample_rate = sample_rate;
-
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
+    // 4-step sequence, disable IRQ
+    fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x40);
+
+    // Init reserve state
+    player_clear_reserve(player);
 
     *out_player = player;
     return FAM_SUCCESS;
+
+error_cleanup:
+    fam_apu_free(apu);
+    free(player);
+
+    return error;
 }
 
 void fam_player_free(FamPlayer* player) {
@@ -220,57 +439,112 @@ void fam_player_free(FamPlayer* player) {
     free(player);
 }
 
-void fam_player_process_samples(FamPlayer* player, int count, void* out_samples) {
-    // TODO: Cache these values?
+void fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
+    if (sample_count == 0) {
+        return;
+    }
+
+    if (player == NULL || out_samples == NULL) {
+        return;
+    }
+
     const double apu_period = 1.0 / fam_apu_get_freq(player->apu);
     const double sample_time = 1.0 / (double)player->sample_rate;
+    const double frame_cycles = fam_apu_get_frame_cycles(player->apu);
 
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < sample_count; i++) {
         player->accumulator += sample_time;
         while (player->accumulator >= apu_period) {
             fam_apu_clock(player->apu);
             player->accumulator -= apu_period;
+            player->cycle_counter++;
 
-            // Check frame interrupt flag and process frame
-            static uint8_t status;
-            fam_apu_read_register(player->apu, FAM_REGISTER_STATUS, &status);
-            if (status & 0x40) {
+            if (player->cycle_counter >= frame_cycles) {
                 player_process_frame(player);
+                player->cycle_counter -= frame_cycles;
             }
         }
 
         // TODO: Other output formats
         float* sample = ((float*)out_samples) + i;
+        // TODO: Average samples across multiple APU clocks to prevent aliasing
         fam_apu_get_sample(player->apu, sample);
     }
 }
 
-// TODO: Command buffer for thread safety
 void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
+    if (player == NULL || music == NULL) {
+        return;
+    }
+
     player->music = music;
     player->music_pos = 0;
     player->music_skip_counter = 0;
     player->music_paused = false;
 
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, music->channel_mask & 0xFF);
-    fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x00);
+    // Reset reserve state
+    player_clear_reserve(player);
+
+    player_update_status_register(player);
 }
 
 void fam_player_pause_music(FamPlayer* player) {
-    player->music_paused = true;
+    if (player == NULL) {
+        return;
+    }
 
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, 0x00);
+    if (player->music == NULL || player->music_paused) {
+        return;  
+    }
+
+    player->music_paused = true;
+    player_silence_music(player);
 }
 
 void fam_player_resume_music(FamPlayer* player) {
+    if (player == NULL) {
+        return;
+    }
+
+    if (player->music == NULL || !player->music_paused) {
+        return;
+    }
+
     player->music_paused = false;
 
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, 0x1F);
-    fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x00);
+    // Restore pulse and noise volume, triangle linear counter and halt
+    if (player->sfx[CHAN_ID_PULSE1] == NULL) fam_apu_write_register(player->apu, 0x4000, player->reserve_pulse1[0]);
+    if (player->sfx[CHAN_ID_PULSE2] == NULL) fam_apu_write_register(player->apu, 0x4004, player->reserve_pulse2[0]);
+    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) fam_apu_write_register(player->apu, 0x4008, player->reserve_triangle[0]);
+    if (player->sfx[CHAN_ID_NOISE] == NULL) fam_apu_write_register(player->apu, 0x400C, player->reserve_noise[0]);
 }
 
 void fam_player_stop_music(FamPlayer* player) {
+    if (player == NULL) {
+        return;
+    }
+
+    if (player->music == NULL) {
+        return;
+    }
+
     player->music = NULL;
 
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, 0x00);
+    player_update_status_register(player);
+}
+
+void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
+    if (player == NULL || sfx == NULL) {
+        return;
+    }
+
+    if (sfx->channel_id >= SFX_CHANNEL_COUNT) {
+        return;
+    }
+
+    player->sfx[sfx->channel_id] = sfx;
+    player->sfx_pos[sfx->channel_id] = 0;
+    player->sfx_skip_counter[sfx->channel_id] = 0;
+
+    player_update_status_register(player);
 }

@@ -2,6 +2,9 @@
 #include <stdlib.h>
 
 #define NES_CPU_FREQ_NTSC 1789773
+#define NES_CPU_FREQ_PAL 1662607
+#define NES_CPU_CYCLES_PER_FRAME_NTSC 29780.5 // 60.099 Hz
+#define NES_CPU_CYCLES_PER_FRAME_PAL 33247.5 // 50.007 Hz
 
 #define QUARTER_FRAME_CLOCK 3729
 #define HALF_FRAME_CLOCK 7457
@@ -43,6 +46,43 @@ static const uint16_t DMC_RATE_NTSC[16] = {
 
 static const uint16_t DMC_RATE_PAL[16] = {
     398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50
+};
+
+// Mixer output value tables
+static const float PULSE_MIX_TABLE[31] = {
+    0.000000, 0.011609, 0.022939, 0.034001, 0.044803, 0.055355, 0.065665, 0.075741, 
+    0.085591, 0.095224, 0.104645, 0.113862, 0.122882, 0.131710, 0.140353, 0.148816, 
+    0.157105, 0.165226, 0.173183, 0.180981, 0.188626, 0.196120, 0.203470, 0.210679, 
+    0.217751, 0.224689, 0.231499, 0.238182, 0.244744, 0.251186, 0.257513 
+};
+
+static const float TND_MIX_TABLE[203] = {
+    0.000000, 0.006700, 0.013345, 0.019936, 0.026474, 0.032959, 0.039393, 0.045775, 
+    0.052106, 0.058386, 0.064618, 0.070800, 0.076934, 0.083020, 0.089058, 0.095050, 
+    0.100996, 0.106896, 0.112751, 0.118561, 0.124327, 0.130049, 0.135728, 0.141365, 
+    0.146959, 0.152512, 0.158024, 0.163494, 0.168925, 0.174315, 0.179666, 0.184978, 
+    0.190252, 0.195487, 0.200684, 0.205845, 0.210968, 0.216054, 0.221105, 0.226120, 
+    0.231099, 0.236043, 0.240953, 0.245828, 0.250669, 0.255477, 0.260252, 0.264993, 
+    0.269702, 0.274379, 0.279024, 0.283638, 0.288220, 0.292771, 0.297292, 0.301782, 
+    0.306242, 0.310673, 0.315074, 0.319446, 0.323789, 0.328104, 0.332390, 0.336649, 
+    0.340879, 0.345083, 0.349259, 0.353408, 0.357530, 0.361626, 0.365696, 0.369740, 
+    0.373759, 0.377752, 0.381720, 0.385662, 0.389581, 0.393474, 0.397344, 0.401189, 
+    0.405011, 0.408809, 0.412584, 0.416335, 0.420064, 0.423770, 0.427454, 0.431115, 
+    0.434754, 0.438371, 0.441966, 0.445540, 0.449093, 0.452625, 0.456135, 0.459625, 
+    0.463094, 0.466543, 0.469972, 0.473380, 0.476769, 0.480138, 0.483488, 0.486818, 
+    0.490129, 0.493421, 0.496694, 0.499948, 0.503184, 0.506402, 0.509601, 0.512782, 
+    0.515946, 0.519091, 0.522219, 0.525330, 0.528423, 0.531499, 0.534558, 0.537601, 
+    0.540626, 0.543635, 0.546627, 0.549603, 0.552563, 0.555507, 0.558434, 0.561346, 
+    0.564242, 0.567123, 0.569988, 0.572838, 0.575673, 0.578493, 0.581298, 0.584088, 
+    0.586863, 0.589623, 0.592370, 0.595101, 0.597819, 0.600522, 0.603212, 0.605887, 
+    0.608549, 0.611197, 0.613831, 0.616452, 0.619059, 0.621653, 0.624234, 0.626802, 
+    0.629357, 0.631899, 0.634428, 0.636944, 0.639448, 0.641939, 0.644418, 0.646885, 
+    0.649339, 0.651781, 0.654212, 0.656630, 0.659036, 0.661431, 0.663813, 0.666185, 
+    0.668544, 0.670893, 0.673229, 0.675555, 0.677869, 0.680173, 0.682465, 0.684746, 
+    0.687017, 0.689276, 0.691525, 0.693763, 0.695991, 0.698208, 0.700415, 0.702611, 
+    0.704797, 0.706973, 0.709139, 0.711294, 0.713440, 0.715576, 0.717702, 0.719818, 
+    0.721924, 0.724021, 0.726108, 0.728186, 0.730254, 0.732313, 0.734362, 0.736402, 
+    0.738433, 0.740455, 0.742468, 
 };
 
 typedef struct PulseChannel {
@@ -570,48 +610,50 @@ FamResult fam_apu_init(FamApu** out_apu) {
 }
 
 void fam_apu_free(FamApu* apu) {
+    if (apu == NULL) return;
+
     free(apu);
 }
 
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
     switch (reg) {
-        case FAM_REGISTER_PULSE1_DUTY:
-        case FAM_REGISTER_PULSE1_SWEEP:
-        case FAM_REGISTER_PULSE1_TIMER_LO:
-        case FAM_REGISTER_PULSE1_TIMER_HI: {
-            int offset = (int)reg - FAM_REGISTER_PULSE1_DUTY;
+        case FAM_REGISTER_PULSE1_0:
+        case FAM_REGISTER_PULSE1_1:
+        case FAM_REGISTER_PULSE1_2:
+        case FAM_REGISTER_PULSE1_3: {
+            int offset = (int)reg - FAM_REGISTER_PULSE1_0;
             apu_write_pulse_register(apu, 0, offset, data);
             break;
         }
-        case FAM_REGISTER_PULSE2_DUTY:
-        case FAM_REGISTER_PULSE2_SWEEP:
-        case FAM_REGISTER_PULSE2_TIMER_LO:
-        case FAM_REGISTER_PULSE2_TIMER_HI: {
-            int offset = (int)reg - FAM_REGISTER_PULSE2_DUTY;
+        case FAM_REGISTER_PULSE2_0:
+        case FAM_REGISTER_PULSE2_1:
+        case FAM_REGISTER_PULSE2_2:
+        case FAM_REGISTER_PULSE2_3: {
+            int offset = (int)reg - FAM_REGISTER_PULSE2_0;
             apu_write_pulse_register(apu, 1, offset, data);
             break;
         }
-        case FAM_REGISTER_TRIANGLE_COUNTER:
-        case FAM_REGISTER_TRIANGLE_UNUSED:
-        case FAM_REGISTER_TRIANGLE_TIMER_LO:
-        case FAM_REGISTER_TRIANGLE_TIMER_HI: {
-            int offset = (int)reg - FAM_REGISTER_TRIANGLE_COUNTER;
+        case FAM_REGISTER_TRIANGLE_0:
+        case FAM_REGISTER_TRIANGLE_1:
+        case FAM_REGISTER_TRIANGLE_2:
+        case FAM_REGISTER_TRIANGLE_3: {
+            int offset = (int)reg - FAM_REGISTER_TRIANGLE_0;
             apu_write_triangle_register(apu, offset, data);
             break;
         }
-        case FAM_REGISTER_NOISE_ENVELOPE:
-        case FAM_REGISTER_NOISE_UNUSED:
-        case FAM_REGISTER_NOISE_PERIOD:
-        case FAM_REGISTER_NOISE_LOAD: {
-            int offset = (int)reg - FAM_REGISTER_NOISE_ENVELOPE;
+        case FAM_REGISTER_NOISE_0:
+        case FAM_REGISTER_NOISE_1:
+        case FAM_REGISTER_NOISE_2:
+        case FAM_REGISTER_NOISE_3: {
+            int offset = (int)reg - FAM_REGISTER_NOISE_0;
             apu_write_noise_register(apu, offset, data);
             break;
         }
-        case FAM_REGISTER_DMC_FLAGS:
-        case FAM_REGISTER_DMC_LOAD:
-        case FAM_REGISTER_DMC_ADDRESS:
-        case FAM_REGISTER_DMC_LENGTH: {
-            int offset = (int)reg - FAM_REGISTER_DMC_FLAGS;
+        case FAM_REGISTER_DMC_0:
+        case FAM_REGISTER_DMC_1:
+        case FAM_REGISTER_DMC_2:
+        case FAM_REGISTER_DMC_3: {
+            int offset = (int)reg - FAM_REGISTER_DMC_0;
             apu_write_dmc_register(apu, offset, data);
             break;
         }
@@ -664,22 +706,22 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
 
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
     switch (reg) {
-        case FAM_REGISTER_PULSE1_DUTY:
-        case FAM_REGISTER_PULSE1_SWEEP:
-        case FAM_REGISTER_PULSE1_TIMER_LO:
-        case FAM_REGISTER_PULSE1_TIMER_HI:
-        case FAM_REGISTER_PULSE2_DUTY:
-        case FAM_REGISTER_PULSE2_SWEEP:
-        case FAM_REGISTER_PULSE2_TIMER_LO:
-        case FAM_REGISTER_PULSE2_TIMER_HI:
-        case FAM_REGISTER_TRIANGLE_COUNTER:
-        case FAM_REGISTER_TRIANGLE_UNUSED:
-        case FAM_REGISTER_TRIANGLE_TIMER_LO:
-        case FAM_REGISTER_TRIANGLE_TIMER_HI:
-        case FAM_REGISTER_NOISE_ENVELOPE:
-        case FAM_REGISTER_NOISE_UNUSED:
-        case FAM_REGISTER_NOISE_PERIOD:
-        case FAM_REGISTER_NOISE_LOAD:
+        case FAM_REGISTER_PULSE1_0:
+        case FAM_REGISTER_PULSE1_1:
+        case FAM_REGISTER_PULSE1_2:
+        case FAM_REGISTER_PULSE1_3:
+        case FAM_REGISTER_PULSE2_0:
+        case FAM_REGISTER_PULSE2_1:
+        case FAM_REGISTER_PULSE2_2:
+        case FAM_REGISTER_PULSE2_3:
+        case FAM_REGISTER_TRIANGLE_0:
+        case FAM_REGISTER_TRIANGLE_1:
+        case FAM_REGISTER_TRIANGLE_2:
+        case FAM_REGISTER_TRIANGLE_3:
+        case FAM_REGISTER_NOISE_0:
+        case FAM_REGISTER_NOISE_1:
+        case FAM_REGISTER_NOISE_2:
+        case FAM_REGISTER_NOISE_3:
             return FAM_ERROR_WRITE_ONLY;
         case FAM_REGISTER_STATUS: {
             // Keep bit 5 as it was (Open bus approximation)
@@ -731,22 +773,16 @@ void fam_apu_clock(FamApu* apu) {
 }
 
 void fam_apu_get_sample(FamApu* apu, void* out_sample) {
-    float pulse_out = 0.0f;
     uint8_t pulse_sum = pulse_get_output(apu->pulse);
     pulse_sum += pulse_get_output(apu->pulse + 1);
+    
+    float pulse_out = PULSE_MIX_TABLE[pulse_sum];
 
-    if (pulse_sum > 0) {
-        pulse_out = 95.52f / (8128.0f / pulse_sum + 100);
-    }
-
-    float tnd_out = 0.0f;
     uint8_t triangle = triangle_get_output(&apu->triangle);
     uint8_t noise = noise_get_output(&apu->noise);
     uint8_t dmc = apu->dmc.output_level;
 
-    if (triangle != 0 || noise != 0 || dmc != 0) {
-        tnd_out = 159.79f / (1 / ((float)triangle / 8227 + (float)noise / 12241 + (float)dmc / 22638) + 100);
-    }
+    float tnd_out = TND_MIX_TABLE[3 * triangle + 2 * noise + dmc];
 
     float mix = pulse_out + tnd_out;
 
@@ -759,4 +795,9 @@ void fam_apu_get_sample(FamApu* apu, void* out_sample) {
 double fam_apu_get_freq(FamApu* apu) {
     // TODO: Add PAL support
     return (double)NES_CPU_FREQ_NTSC / 2.0;
+}
+
+double fam_apu_get_frame_cycles(FamApu* apu) {
+    // TODO: Add PAL support
+    return (double)NES_CPU_CYCLES_PER_FRAME_NTSC / 2.0;
 }
