@@ -510,6 +510,15 @@ int main(int argc, char **argv) {
         .cmd_buffer = &cmd_buffer
     };
 
+    size_t ftm_track_count;
+    FamMusic* ftm_tracks;
+    err = fam_load_music_ftm("C:\\Users\\jonah\\Downloads\\FamiTracker-v0.4.6\\Demo songs\\2A03_Necrophageon-Neon_Starlight.ftm", &ftm_track_count, &ftm_tracks);
+    if (err == FAM_SUCCESS) {
+        printf("FTM file loaded successfully! Track count: %zu\n", ftm_track_count);
+    } else {
+        printf("FTM file loading failed with error code: %d\n", err);
+    }
+
     if (!SDL_Init(SDL_INIT_AUDIO)) {
         printf("Error initializing SDL: %s\n", SDL_GetError());
         return 1;

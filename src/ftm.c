@@ -1,4 +1,5 @@
 #include <fam/ftm.h>
+#include <fam/internal/player_types.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -81,7 +82,25 @@ typedef enum {
 	EF_VRC7_CARRIER,
 	EF_VRC7_LEVELS,
 */
-} Effect;
+} EffectType;
+
+typedef enum {
+    NOTE_NONE                   = 0,
+    NOTE_C,
+    NOTE_Cs,
+    NOTE_D,
+    NOTE_Ds,
+    NOTE_E,
+    NOTE_F,
+    NOTE_Fs,
+    NOTE_G,
+    NOTE_Gs,
+    NOTE_A,
+    NOTE_As,
+    NOTE_B,
+    NOTE_RELEASE,
+    NOTE_HALT
+} NoteType;
 
 typedef enum {
     SOUNDCHIP_NONE               = 0,
@@ -235,6 +254,24 @@ static inline void document_free(Document* doc) {
     free(doc->instruments);
     free(doc->sequences);
     *doc = (Document){0};
+}
+
+static inline Note* track_get_note(
+    const Track* track, 
+    uint32_t pattern_idx, 
+    uint32_t channel_idx, 
+    uint32_t row, 
+    uint32_t channel_count) {
+
+    if (pattern_idx >= track->pattern_count ||
+        channel_idx >= channel_count ||
+        row >= track->pattern_length) {
+        return NULL;
+    }
+
+    Note* pattern = track->patterns + (track->pattern_length * channel_count * pattern_idx);
+    Note* channel = pattern + (track->pattern_length * channel_idx);
+    return channel + row;
 }
 
 static inline BlockReader block_reader_init(void* data, size_t size) {
@@ -858,9 +895,7 @@ static FamResult block_read_patterns(BlockReader* reader, uint32_t block_version
                 return FAM_ERROR_INVALID_FORMAT;
             }
             
-            Note* pattern = track->patterns + (track->pattern_length * doc->channel_count * pattern_idx);
-            Note* channel = pattern + (track->pattern_length * channel_idx);
-            Note* note = channel + row;
+            Note* note = track_get_note(track, pattern_idx, channel_idx, row, doc->channel_count);
 
             block_read(reader, note, sizeof(uint8_t) * 4);
 
@@ -1050,6 +1085,58 @@ cleanup:
     return result;
 }
 
+static uint32_t scan_active_channels(const Track* track, uint32_t channel_count) {
+    uint32_t result = 0;
+    const uint32_t result_max = (1 << channel_count) - 1;
+
+    for (uint32_t frame = 0; frame < track->frame_count && result != result_max; frame++) {
+        for (uint32_t row = 0; row < track->pattern_length; row++) {
+            for (uint32_t channel = 0; channel < channel_count; channel++) {
+                if (result & (1 << channel)) {
+                    continue;
+                }
+                uint8_t pattern = track->frames[frame*channel_count + channel];
+                const Note* note = track_get_note(track, pattern, channel, row, channel_count);
+                // TODO: Take into account channels that don't play notes but still have effects!
+                if (note->note != NOTE_NONE) {
+                    result |= (1 << channel);
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+static void convert_track(const Document* doc, uint8_t track_idx, FamMusic* out_track) {
+    Track* track = &doc->tracks[track_idx];
+    
+    uint32_t active_channels = scan_active_channels(track, doc->channel_count);
+    printf("Track #%d has %d active channels\n", track_idx, active_channels);
+}
+
 FamResult fam_load_music_ftm(const char* fname, size_t* out_count, FamMusic** out_tracks) {
-    return FAM_ERROR_UNIMPLEMENTED;
+    if (out_count == NULL || out_tracks == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    *out_count = 0;
+    *out_tracks = NULL;
+
+    Document doc;
+    FamResult result = parse_binary(fname, &doc);
+    if (result != FAM_SUCCESS) {
+        return result;
+    }
+
+    FamMusic* converted_tracks = (FamMusic*)calloc(doc.track_count, sizeof(FamMusic));
+
+    for (uint8_t i = 0; i < doc.track_count; i++) {
+        convert_track(&doc, i, &converted_tracks[i]);
+    }
+
+    *out_count = doc.track_count;
+    *out_tracks = converted_tracks;
+
+    return FAM_SUCCESS;
 }
