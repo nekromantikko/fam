@@ -1,6 +1,5 @@
 ﻿#include <fam/player.h>
 #include <fam/apu.h>
-#include <fam/util.h>
 #include <stdlib.h>
 #include <string.h>
 
