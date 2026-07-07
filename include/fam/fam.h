@@ -3,3 +3,4 @@
 #include <fam/common.h>
 #include <fam/apu.h>
 #include <fam/player.h>
+#include <fam/ftm.h>
