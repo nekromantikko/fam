@@ -388,35 +388,23 @@ static void player_process_frame(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_init(FamPlayer** out_player, uint32_t sample_rate) {
-    if (out_player == NULL) {
+FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_rate) {
+    if (out_player == NULL || apu == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
-    FamApu* apu = NULL;
-    FamPlayer* player = NULL;
-
-    FamResult error = FAM_ERROR_UNKNOWN;
-
-    player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
+    FamPlayer* player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
     if (player == NULL) {
-        error = FAM_ERROR_OUT_OF_MEMORY;
-        goto error_cleanup;
+        return FAM_ERROR_OUT_OF_MEMORY;
     }
 
+    player->apu = apu;
     player->sample_rate = sample_rate;
     player->accumulator = 0.0;
     player->cycle_counter = 0.0;
     player->music = NULL;
     memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
 
-    FamResult err = fam_apu_init(&apu);
-    if (err != FAM_SUCCESS) {
-        error = err;
-        goto error_cleanup;
-    }
-
-    player->apu = apu;
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
     // 4-step sequence, disable IRQ
     fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x40);
@@ -426,16 +414,9 @@ FamResult fam_player_init(FamPlayer** out_player, uint32_t sample_rate) {
 
     *out_player = player;
     return FAM_SUCCESS;
-
-error_cleanup:
-    fam_apu_free(apu);
-    free(player);
-
-    return error;
 }
 
 void fam_player_free(FamPlayer* player) {
-    fam_apu_free(player->apu);
     free(player);
 }
 

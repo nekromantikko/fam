@@ -1,8 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_atomic.h>
-#include <fam/player.h>
+#include <fam/fam.h>
 
 #define SAMPLE_RATE 44100
 #define CMD_BUFFER_CAPACITY 256 // NOTE: Must be power of 2!
@@ -488,8 +487,15 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
 }
 
 int main(int argc, char **argv) {
+    FamApu* apu;
+    FamResult err = fam_apu_init(&apu);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing APU failed with error code %d\n", err);
+        return 1;
+    }
+
     FamPlayer* player;
-    FamResult err = fam_player_init(&player, SAMPLE_RATE);
+    err = fam_player_init(&player, apu, SAMPLE_RATE);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;
@@ -551,6 +557,7 @@ int main(int argc, char **argv) {
     SDL_Quit();
 
     fam_player_free(player);
+    fam_apu_free(apu);
 
     return 0;
 }
