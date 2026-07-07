@@ -25,12 +25,12 @@
 typedef enum {
     MACHINE_NTSC = 0,
     MACHINE_PAL
-} Machine;
+} MachineType;
 
 typedef enum {
     VIBRATO_OLD = 0,
     VIBRATO_NEW
-} Vibrato;
+} VibratoType;
 
 typedef enum {
     INSTRUMENT_NONE = 0,
@@ -44,45 +44,83 @@ typedef enum {
 
 typedef enum {
     EF_NONE = 0,
-	EF_SPEED,
-	EF_JUMP,
-	EF_SKIP,
-	EF_HALT,
-	EF_VOLUME,
-	EF_PORTAMENTO,
-	EF_PORTAOFF,				// unused!!
-	EF_SWEEPUP,
-	EF_SWEEPDOWN,
-	EF_ARPEGGIO,
-	EF_VIBRATO,
-	EF_TREMOLO,
-	EF_PITCH,
-	EF_DELAY,
-	EF_DAC,
-	EF_PORTA_UP,
-	EF_PORTA_DOWN,
-	EF_DUTY_CYCLE,
-	EF_SAMPLE_OFFSET,
-	EF_SLIDE_UP,
-	EF_SLIDE_DOWN,
-	EF_VOLUME_SLIDE,
-	EF_NOTE_CUT,
-	EF_RETRIGGER,
-	EF_DELAYED_VOLUME,			// Unimplemented
-	EF_FDS_MOD_DEPTH,
-	EF_FDS_MOD_SPEED_HI,
-	EF_FDS_MOD_SPEED_LO,
-	EF_DPCM_PITCH,
-	EF_SUNSOFT_ENV_LO,
-	EF_SUNSOFT_ENV_HI,
-	EF_SUNSOFT_ENV_TYPE,
+    EF_SPEED,
+    EF_JUMP,
+    EF_SKIP,
+    EF_HALT,
+    EF_VOLUME,
+    EF_PORTAMENTO,
+    EF_PORTAOFF,				// unused!!
+    EF_SWEEPUP,
+    EF_SWEEPDOWN,
+    EF_ARPEGGIO,
+    EF_VIBRATO,
+    EF_TREMOLO,
+    EF_PITCH,
+    EF_DELAY,
+    EF_DAC,
+    EF_PORTA_UP,
+    EF_PORTA_DOWN,
+    EF_DUTY_CYCLE,
+    EF_SAMPLE_OFFSET,
+    EF_SLIDE_UP,
+    EF_SLIDE_DOWN,
+    EF_VOLUME_SLIDE,
+    EF_NOTE_CUT,
+    EF_RETRIGGER,
+    EF_DELAYED_VOLUME,			// Unimplemented
+    EF_FDS_MOD_DEPTH,
+    EF_FDS_MOD_SPEED_HI,
+    EF_FDS_MOD_SPEED_LO,
+    EF_DPCM_PITCH,
+    EF_SUNSOFT_ENV_LO,
+    EF_SUNSOFT_ENV_HI,
+    EF_SUNSOFT_ENV_TYPE,
 //	EF_TARGET_VOLUME_SLIDE, 
 /*
-	EF_VRC7_MODULATOR,
-	EF_VRC7_CARRIER,
-	EF_VRC7_LEVELS,
+    EF_VRC7_MODULATOR,
+    EF_VRC7_CARRIER,
+    EF_VRC7_LEVELS,
 */
 } EffectType;
+
+typedef enum {
+    CHANID_SQUARE1,
+    CHANID_SQUARE2,
+    CHANID_TRIANGLE,
+    CHANID_NOISE,
+    CHANID_DPCM,
+
+    CHANID_VRC6_PULSE1,
+    CHANID_VRC6_PULSE2,
+    CHANID_VRC6_SAWTOOTH,
+
+    CHANID_MMC5_SQUARE1,
+    CHANID_MMC5_SQUARE2,
+    CHANID_MMC5_VOICE,
+
+    CHANID_N163_CHAN1,
+    CHANID_N163_CHAN2,
+    CHANID_N163_CHAN3,
+    CHANID_N163_CHAN4,
+    CHANID_N163_CHAN5,
+    CHANID_N163_CHAN6,
+    CHANID_N163_CHAN7,
+    CHANID_N163_CHAN8,
+
+    CHANID_FDS,
+
+    CHANID_VRC7_CH1,
+    CHANID_VRC7_CH2,
+    CHANID_VRC7_CH3,
+    CHANID_VRC7_CH4,
+    CHANID_VRC7_CH5,
+    CHANID_VRC7_CH6,
+
+    CHANID_S5B_CH1,
+    CHANID_S5B_CH2,
+    CHANID_S5B_CH3,
+} ChannelType;
 
 typedef enum {
     NOTE_NONE                   = 0,
@@ -200,6 +238,34 @@ typedef struct {
     SequenceGroup* sequences;
 } Document;
 
+typedef struct {
+    size_t capacity;
+    size_t size;
+    uint8_t* data;
+} Blob;
+
+typedef struct {
+    int32_t base_period;
+
+    // Vibrato
+    uint32_t vibrato_depth;
+    uint32_t vibrato_speed;
+    uint32_t vibrato_phase;
+
+    // Other effects
+    int8_t pitch_offset;        // Pxx
+    uint8_t volume_slide;       // Axy
+    uint8_t note_cut;           // Sxx
+
+    // Duty
+    uint8_t duty_period;
+    uint8_t default_duty;       // Vxx
+
+    int32_t max_period;
+    int32_t max_volume;
+
+} ChannelState;
+
 static const uint32_t NOTE_TABLE_NTSC[NOTE_COUNT] = {
     0xD5B, 0xC9C, 0xBE6, 0xB3B, 0xA9A, 0xA01, 0x972, 0x8EA, 
     0x86A, 0x7F1, 0x77F, 0x713, 0x6AD, 0x64D, 0x5F3, 0x59D, 
@@ -213,6 +279,25 @@ static const uint32_t NOTE_TABLE_NTSC[NOTE_COUNT] = {
     0x034, 0x031, 0x02F, 0x02C, 0x029, 0x027, 0x025, 0x023, 
     0x021, 0x01F, 0x01D, 0x01B, 0x01A, 0x018, 0x017, 0x015, 
     0x014, 0x013, 0x012, 0x011, 0x010, 0x00F, 0x00E, 0x00D, 
+};
+
+static const int32_t VIBRATO_TABLE_OLD[256] = {
+    0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 
+    0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 
+    0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 0x002, 
+    0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x002, 0x003, 0x003, 0x003, 0x003, 0x003, 
+    0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x003, 0x003, 0x003, 0x003, 0x004, 0x004, 0x004, 0x004, 
+    0x001, 0x001, 0x001, 0x002, 0x002, 0x003, 0x003, 0x004, 0x004, 0x004, 0x005, 0x005, 0x006, 0x006, 0x007, 0x007, 
+    0x001, 0x001, 0x002, 0x002, 0x003, 0x003, 0x004, 0x004, 0x005, 0x005, 0x006, 0x006, 0x007, 0x007, 0x008, 0x008, 
+    0x001, 0x001, 0x002, 0x003, 0x004, 0x005, 0x006, 0x007, 0x008, 0x009, 0x00A, 0x00B, 0x00C, 0x00D, 0x00E, 0x00F, 
+    0x001, 0x002, 0x003, 0x004, 0x005, 0x006, 0x007, 0x008, 0x009, 0x00A, 0x00B, 0x00C, 0x00D, 0x00E, 0x00F, 0x010, 
+    0x001, 0x002, 0x004, 0x006, 0x008, 0x00A, 0x00C, 0x00E, 0x010, 0x012, 0x014, 0x016, 0x018, 0x01A, 0x01C, 0x01E, 
+    0x001, 0x003, 0x005, 0x007, 0x009, 0x00B, 0x00D, 0x00F, 0x011, 0x013, 0x015, 0x017, 0x019, 0x01B, 0x01D, 0x01F, 
+    0x001, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018, 0x01C, 0x020, 0x024, 0x028, 0x02C, 0x030, 0x034, 0x038, 0x03C, 
+    0x001, 0x005, 0x009, 0x00D, 0x011, 0x015, 0x019, 0x01D, 0x021, 0x025, 0x029, 0x02D, 0x031, 0x035, 0x039, 0x03D, 
+    0x001, 0x008, 0x010, 0x018, 0x020, 0x028, 0x030, 0x038, 0x040, 0x048, 0x050, 0x058, 0x060, 0x068, 0x070, 0x078, 
+    0x001, 0x009, 0x011, 0x019, 0x021, 0x029, 0x031, 0x039, 0x041, 0x049, 0x051, 0x059, 0x061, 0x069, 0x071, 0x079, 
+    0x001, 0x010, 0x020, 0x030, 0x040, 0x050, 0x060, 0x070, 0x080, 0x090, 0x0A0, 0x0B0, 0x0C0, 0x0D0, 0x0E0, 0x0F0, 
 };
 
 static const int32_t VIBRATO_TABLE_NEW[256] = {
@@ -1083,6 +1168,173 @@ cleanup:
     }
     
     return result;
+}
+
+static FamResult blob_init(Blob* blob, size_t capacity) {
+    blob->data = (uint8_t*)malloc(capacity);
+    if (blob->data == NULL) {
+        return FAM_ERROR_OUT_OF_MEMORY;
+    }
+    blob->capacity = capacity;
+    blob->size = 0;
+    return FAM_SUCCESS;
+} 
+
+static FamResult blob_write_register(Blob* blob, uint16_t reg, uint8_t data) {
+    if (blob->capacity < blob->size + sizeof(StreamOperation)) {
+        uint8_t* new_data = (uint8_t*)realloc(blob->data, blob->capacity * 2);
+        if (new_data == NULL) {
+            return FAM_ERROR_OUT_OF_MEMORY;
+        }
+        blob->data = new_data;
+        blob->capacity *= 2;
+    }
+    
+    uint8_t* ptr = blob->data + blob->size;
+    memcpy(ptr, &reg, sizeof(reg));
+    ptr += sizeof(reg);
+    memcpy(ptr, &data, sizeof(data));
+
+    return FAM_SUCCESS;
+}
+
+static inline int32_t max_volume_from_channel_id(int32_t channel_id) {
+    switch (channel_id) {
+        case CHANID_SQUARE1:
+        case CHANID_SQUARE2:
+        case CHANID_TRIANGLE:
+        case CHANID_NOISE:
+        case CHANID_DPCM:
+            return 0x0F;
+        case CHANID_VRC6_PULSE1:
+        case CHANID_VRC6_PULSE2:
+        case CHANID_VRC6_SAWTOOTH:
+            return 0x0F;
+        case CHANID_MMC5_SQUARE1:
+        case CHANID_MMC5_SQUARE2:
+            return 0x0F;
+        case CHANID_N163_CHAN1:
+        case CHANID_N163_CHAN2:
+        case CHANID_N163_CHAN3:
+        case CHANID_N163_CHAN4:
+        case CHANID_N163_CHAN5:
+        case CHANID_N163_CHAN6:
+        case CHANID_N163_CHAN7:
+        case CHANID_N163_CHAN8:
+            return 0x0F;
+        case CHANID_FDS:
+            return 0x20;
+        case CHANID_VRC7_CH1:
+        case CHANID_VRC7_CH2:
+        case CHANID_VRC7_CH3:
+        case CHANID_VRC7_CH4:
+        case CHANID_VRC7_CH5:
+        case CHANID_VRC7_CH6:
+            return 0x0F;
+        case CHANID_S5B_CH1:
+        case CHANID_S5B_CH2:
+        case CHANID_S5B_CH3:
+            return 0x0F;
+    }
+
+    return 0;
+}
+
+static inline int32_t max_period_from_channel_id(int32_t channel_id) {
+    switch (channel_id) {
+        case CHANID_SQUARE1:
+        case CHANID_SQUARE2:
+        case CHANID_TRIANGLE:
+        case CHANID_NOISE:
+        case CHANID_DPCM:
+            return 0x7FF;
+        case CHANID_VRC6_PULSE1:
+        case CHANID_VRC6_PULSE2:
+        case CHANID_VRC6_SAWTOOTH:
+            return 0x7FF;
+        case CHANID_MMC5_SQUARE1:
+        case CHANID_MMC5_SQUARE2:
+            return 0xFFF;
+        case CHANID_N163_CHAN1:
+        case CHANID_N163_CHAN2:
+        case CHANID_N163_CHAN3:
+        case CHANID_N163_CHAN4:
+        case CHANID_N163_CHAN5:
+        case CHANID_N163_CHAN6:
+        case CHANID_N163_CHAN7:
+        case CHANID_N163_CHAN8:
+            return 0xFFFF;
+        case CHANID_FDS:
+            return 0xFFF;
+        case CHANID_VRC7_CH1:
+        case CHANID_VRC7_CH2:
+        case CHANID_VRC7_CH3:
+        case CHANID_VRC7_CH4:
+        case CHANID_VRC7_CH5:
+        case CHANID_VRC7_CH6:
+            return 0x7FF;
+        case CHANID_S5B_CH1:
+        case CHANID_S5B_CH2:
+        case CHANID_S5B_CH3:
+            return 0xFFF;
+    }
+
+    return 0;
+}
+
+static inline int32_t channel_get_vibrato(const ChannelState* channel, bool mode) {
+    if (channel->vibrato_depth == 0) {
+        return 0;
+    }
+
+    const int32_t* table = mode == VIBRATO_NEW ? VIBRATO_TABLE_NEW : VIBRATO_TABLE_OLD;
+
+    const int32_t row = (channel->vibrato_depth & 0x0F) << 4;
+    const int32_t col = channel->vibrato_phase & 0x0F;
+
+    int32_t freq = 0;
+    switch(channel->vibrato_phase >> 4) {
+        case 0:                     // Rising
+            freq = table[row + col];
+            break;
+        case 1:                     // Falling
+            freq = table[row + 15 - col];
+            break;
+        case 2:                     // Rising negative
+            freq = -table[row + col];
+            break;
+        case 3:                     // Falling negative
+            freq = -table[row + 15 - col];
+            break;
+    }
+
+    if (mode != VIBRATO_NEW) {
+        freq = table[row + 15] + 1;
+        freq >>= 1;
+    }
+
+    return freq;
+}
+
+static inline int32_t clamp_period(int32_t period, int32_t max_period) {
+    if (period < 0) {
+        period = 0;
+    } else if (period > max_period) {
+        period = max_period;
+    }
+    return period;
+}
+
+static inline int32_t channel_calculate_period(const ChannelState* channel, bool vibrato_mode) {
+    return clamp_period(channel->base_period - channel_get_vibrato(channel, vibrato_mode) + channel->pitch_offset, channel->max_period);
+}
+
+static FamResult tick_pulse(ChannelState* channel, Blob* blob, bool is_pulse_1) {
+
+
+    uint8_t duty_clamped = channel->duty_period & 0x03;
+
+
 }
 
 static uint32_t scan_active_channels(const Track* track, uint32_t channel_count) {
