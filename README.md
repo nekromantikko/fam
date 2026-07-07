@@ -15,6 +15,10 @@ Rather than executing raw NES machine code at runtime, the ideal workflow is to 
 - NSF Conversion: While an NSF loader might be added in the future, it would be inherently lossy. The recommended approach will be converting NSFs to a structured tracker format, cleaning them up, and loading them in `fam`.
 - Bindings: Future plans include C# bindings for a Unity plugin.
 
+## What fam is NOT
+
+`fam` is **not** an audio playback library. It has no concept of an audio thread, device or a command queue, it only emulates the NES APU, drives music and SFX playback through APU register writes and generates samples. This is a deliberate design choice to make it as portable as possible and work for different use cases. There are a lot of other audio playback libraries out there that probably do the job better than what I could write, and this way `fam` doesn't place arbitrary limitations for the architecture around it. You could run it in a web AudioWorklet or a real-time audio callback, or a secret third thing. See `examples/` for reference implementations.
+
 ## Emulation Accuracy
 
 The test suite includes implementations of standard APU accuracy tests adapted from Chris "100th_Coin" Siebert's [AccuracyCoin](https://github.com/100thCoin/AccuracyCoin) test suite (Which is largely based on blargg's tests).
@@ -31,17 +35,11 @@ The library currently assumes a **little-endian** architecture. Big-endian archi
  - Pulse 1 & Pulse 2
  - Triangle
  - Noise
- - Delta Modulation Channel (DMC)
+ - Delta Modulation Channel (DMC), reads sample bytes via a user-provided callback
 
-### Basic Audio Driver / Player
+### Audio Player (Driver)
  
- A very basic implementation capable of driving a single music track (currently non-thread-safe).
-
-## Dependencies & Requirements
- 
- - The Core Library: Self-contained with zero dependencies. It handles synthesis and outputs audio samples. Does not interface with audio hardware directly.
- - Threading Requirements: The upcoming thread-safe ring buffer will require a C11 compiler for native atomic support.
- - Examples: The repository includes a basic playback example that uses SDL3 to open an audio device and play the synthesized samples.
+ An implementation capable of driving a single music track, with four slots for sound effects for the pulse, triangle and noise channels with proper prioritization.
 
 ## API Overview
 
@@ -55,9 +53,7 @@ The library currently assumes a **little-endian** architecture. Big-endian archi
 
 ### Audio Player
 
- - [ ] Thread-safe command buffer for the player (Play, pause, stop etc.) using C11 atomics
- - [ ] Sound effect support with proper prioritization
- - [ ] Custom native audio device output wrappers (possibly)
+ - [x] Sound effect support with proper prioritization
 
 ### Audio Expansion Chips (Mappers
 
