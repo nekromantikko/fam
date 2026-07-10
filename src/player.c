@@ -1,88 +1,17 @@
 ﻿#include <fam/player.h>
 #include <fam/apu.h>
+#include <fam/internal/stream_types.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define NO_LOOP UINT64_MAX
-#define SFX_CHANNEL_COUNT 4
-
-typedef enum {
-    CHAN_ID_PULSE1             = 0,
-    CHAN_ID_PULSE2,
-    CHAN_ID_TRIANGLE,
-    CHAN_ID_NOISE,
-    CHAN_ID_DMC,
-
-    CHAN_COUNT,
-} ChannelId;
-
-typedef enum {
-    CHAN_BIT_PULSE1             = 1 << CHAN_ID_PULSE1,
-    CHAN_BIT_PULSE2             = 1 << CHAN_ID_PULSE2,
-    CHAN_BIT_TRIANGLE           = 1 << CHAN_ID_TRIANGLE,
-    CHAN_BIT_NOISE              = 1 << CHAN_ID_NOISE,
-    CHAN_BIT_DMC                = 1 << CHAN_ID_DMC,
-} ChannelFlags;
-
-typedef enum {
-    OP_PULSE1_WRITE0        = 0x0,
-    OP_PULSE1_WRITE1        = 0x1,
-    OP_PULSE1_WRITE2        = 0x2,
-    OP_PULSE1_WRITE3        = 0x3,
-
-    OP_PULSE2_WRITE0        = 0x4,
-    OP_PULSE2_WRITE1        = 0x5,
-    OP_PULSE2_WRITE2        = 0x6,
-    OP_PULSE2_WRITE3        = 0x7,
-
-    OP_TRIANGLE_WRITE0      = 0x8,
-    OP_TRIANGLE_WRITE1      = 0x9,
-    OP_TRIANGLE_WRITE2      = 0xA,
-    OP_TRIANGLE_WRITE3      = 0xB,
-
-    OP_NOISE_WRITE0         = 0xC,
-    OP_NOISE_WRITE1         = 0xD,
-    OP_NOISE_WRITE2         = 0xE,
-    OP_NOISE_WRITE3         = 0xF,
-
-    OP_DMC_WRITE0           = 0x10,
-    OP_DMC_WRITE1           = 0x11,
-    OP_DMC_WRITE2           = 0x12,
-    OP_DMC_WRITE3           = 0x13,
-
-    OP_DMC_PLAY_SAMPLE      = 0x14,
-
-    OP_ENDFRAME             = 0xFE,
-    OP_ENDSTREAM            = 0xFF,
-} StreamOpCode;
-
-typedef struct StreamOperation {
-    uint8_t opcode;
-    uint8_t data;
-} StreamOperation;
-
-struct FamMusic {
-    uint64_t channel_mask;
-    uint64_t sample_data_size;
-    uint64_t sample_data_offset;
-    uint64_t stream_op_count;
-    uint64_t stream_offset;
-    uint64_t loop_point;
-};
-
-struct FamSfx {
-    uint64_t channel_id;
-    uint64_t stream_op_count;
-    uint64_t stream_offset;
-};
 
 struct FamPlayer {
     FamApu* apu;
     uint32_t sample_rate;
 
     const FamMusic* music;
-    size_t music_pos;
+    uint32_t music_pos;
     uint8_t music_skip_counter;
+    int8_t music_dpcm_sample_bank;
     bool music_paused;
 
     // Shadow state to track the music's "real" register state
@@ -93,7 +22,7 @@ struct FamPlayer {
     uint8_t reserve_dmc[4];
 
     const FamSfx* sfx[SFX_CHANNEL_COUNT];
-    size_t sfx_pos[SFX_CHANNEL_COUNT];
+    uint32_t sfx_pos[SFX_CHANNEL_COUNT];
     uint8_t sfx_skip_counter[SFX_CHANNEL_COUNT];
 
     double accumulator;
@@ -173,19 +102,23 @@ static void player_silence_music(FamPlayer* player) {
 }
 
 static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
-    // TODO: "Bank switching" if we want more than 16KB of sample data
     FamPlayer* player = (FamPlayer*)user_data;
     if (player == NULL || player->music == NULL) {
         return 0;
     }
 
-    size_t ind = addr - 0xC000;
-    if (ind >= player->music->sample_data_size) {
+    if (player->music_dpcm_sample_bank < 0) {
         return 0;
     }
 
-    const uint8_t* sample_data = (uint8_t*)player->music + player->music->sample_data_offset;
-    return sample_data[ind];
+    DPCMSampleBank* bank = &player->music->dpcm_sample_banks[player->music_dpcm_sample_bank];
+
+    uint32_t ind = addr - 0xC000;
+    if (ind >= bank->size) {
+        return 0;
+    }
+
+    return bank->data[ind];
 }
 
 static void player_process_music(FamPlayer* player) {
@@ -198,10 +131,8 @@ static void player_process_music(FamPlayer* player) {
         return;
     }
 
-    const StreamOperation* stream_data = (StreamOperation*)((uint8_t*)player->music + player->music->stream_offset); 
-
     while (player->music_pos < player->music->stream_op_count) {
-        StreamOperation op = stream_data[player->music_pos++];
+        StreamOperation op = player->music->stream[player->music_pos++];
 
         switch(op.opcode) {
             case OP_PULSE1_WRITE0:
@@ -265,7 +196,9 @@ static void player_process_music(FamPlayer* player) {
             case OP_DMC_PLAY_SAMPLE:
                 player_update_status_register(player);
                 break;
-
+            case OP_SWITCH_SAMPLE_BANK:
+                player->music_dpcm_sample_bank = (int8_t)op.data;
+                break;
             case OP_ENDFRAME:
                 player->music_skip_counter = op.data;
                 return;
@@ -281,7 +214,7 @@ static void player_process_music(FamPlayer* player) {
 endstream:
 
     // End of song reached (Or loop point out of bounds)
-    if (player->music->loop_point == NO_LOOP || player->music->loop_point >= player->music->stream_op_count) {
+    if (player->music->loop_point == MUSIC_NO_LOOP || player->music->loop_point >= player->music->stream_op_count) {
         fam_player_stop_music(player);
     } else {
         player->music_pos = player->music->loop_point;
@@ -298,10 +231,8 @@ static void player_process_sfx(FamPlayer* player, int channel) {
         return;
     }
 
-    const StreamOperation* stream_data = (StreamOperation*)((uint8_t*)sfx + sfx->stream_offset);
-
     while (player->sfx_pos[channel] < sfx->stream_op_count) {
-        StreamOperation op = stream_data[player->sfx_pos[channel]++];
+        StreamOperation op = sfx->stream[player->sfx_pos[channel]++];
 
         switch(op.opcode) {
             case OP_PULSE1_WRITE0:
@@ -399,9 +330,6 @@ FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_r
 
     player->apu = apu;
     player->sample_rate = sample_rate;
-    player->accumulator = 0.0;
-    player->cycle_counter = 0.0;
-    player->music = NULL;
     memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
 
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
@@ -461,6 +389,7 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     player->music_pos = 0;
     player->music_skip_counter = 0;
     player->music_paused = false;
+    player->music_dpcm_sample_bank = music->dpcm_sample_bank_count == 0 ? -1 : 0;
 
     // Reset reserve state
     player_clear_reserve(player);
