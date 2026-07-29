@@ -555,10 +555,14 @@ int main(int argc, char **argv) {
     };
 
     FamFtModule* module;
+    FamMusic* ftm_music = NULL;
     err = fam_ftmodule_from_file(&module, "C:\\Users\\jonah\\Downloads\\FamiTracker-v0.4.6\\Demo songs\\2A03_Necrophageon-Neon_Starlight.ftm");
     if (err == FAM_SUCCESS) {
         size_t ftm_track_count = fam_ftmodule_track_count(module);
         printf("FTM file loaded successfully! Track count: %zu\n", ftm_track_count);
+        if (ftm_track_count > 0) {
+            fam_music_from_ftmodule_track(&ftm_music, module, 0);
+        }
     } else {
         printf("FTM file loading failed with error code: %d\n", err);
     }
@@ -584,7 +588,9 @@ int main(int argc, char **argv) {
     SDL_ResumeAudioStreamDevice(stream);
     printf("Playing sample song with layered SFX...\n");
 
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
+    // Play the converted FTM track if it loaded, else the hand-authored song.
+    FamMusic* play_music = ftm_music ? ftm_music : music;
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, play_music);
 
     SDL_Delay(1000);
 
@@ -604,12 +610,14 @@ int main(int argc, char **argv) {
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
     cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(2000);
+    SDL_Delay(200000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
     fam_music_free(music);
+    fam_music_free(ftm_music);
+    fam_ftmodule_free(module);
     fam_sfx_free(sfx_pulse1);
     fam_sfx_free(sfx_triangle);
     fam_player_free(player);
