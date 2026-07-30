@@ -1,5 +1,7 @@
 #include <fam/io.h>
 #include <fam/internal/stream_types.h>
+#include <fam/internal/stream_util.h>
+#include <fam/internal/buffer_reader.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -12,77 +14,6 @@ typedef enum {
     FAM_USAGE_MUSIC = 0,
     FAM_USAGE_SFX,
 } FamUsage;
-
-// TODO: Move to utils
-typedef struct {
-    uint8_t* const start;
-    uint8_t* pos;
-    uint8_t* const end;
-    bool error;
-} BufferReader;
-
-static inline BufferReader buffer_reader_init(const void* buffer, size_t size) {
-    BufferReader reader = {
-        .start = (uint8_t*)buffer,
-        .pos = (uint8_t*)buffer,
-        .end = (uint8_t*)buffer + size,
-        .error = false
-    };
-    return reader;
-}
-
-static inline void buffer_reader_read(BufferReader* reader, void* dst, size_t count) {
-    if (reader->error) {
-        return;
-    }
-
-    // Trying to read past block end
-    if (count > (size_t)(reader->end - reader->pos)) {
-        reader->pos = reader->end;
-        reader->error = true;
-        return;
-    }
-
-    memcpy(dst, (void*)reader->pos, count);
-    reader->pos += count;
-}
-
-static inline void buffer_reader_skip(BufferReader* reader, size_t count) {
-    if (reader->error) {
-        return;
-    }
-
-    // Trying to skip past block end
-    if (count > (size_t)(reader->end - reader->pos)) {
-        reader->pos = reader->end;
-        reader->error = true;
-        return;
-    }
-
-    reader->pos += count;
-}
-
-static inline void buffer_reader_seek(BufferReader* reader, size_t offset) {
-    if (reader->error) {
-        return;
-    }
-
-    if (offset > (size_t)(reader->end - reader->start)) {
-        reader->pos = reader->end;
-        reader->error = true;
-        return;
-    }
-
-    reader->pos = reader->start + offset;
-}
-
-static inline size_t buffer_reader_size(const BufferReader* reader) {
-    return (size_t)(reader->end - reader->start);
-}
-
-static inline size_t buffer_reader_remaining(const BufferReader* reader) {
-    return (size_t)(reader->end - reader->pos);
-}
 
 static FamResult validate_header(BufferReader* reader, FamUsage expected_usage) {
     uint32_t magic;
@@ -119,9 +50,9 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
 
     BufferReader reader = buffer_reader_init(buffer, buffer_size);
 
-    FamResult header_result = validate_header(&reader, FAM_USAGE_MUSIC);
-    if (header_result != FAM_SUCCESS) {
-        return header_result;
+    FamResult err = validate_header(&reader, FAM_USAGE_MUSIC);
+    if (err != FAM_SUCCESS) {
+        return err;
     }
 
     uint64_t channel_mask;
@@ -164,11 +95,8 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    // Determine required memory size
-    // NOTE: sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank)!
-    // As long as sizeof(FamMusic) is a multiple of 8, this holds
-    size_t memory_size = sizeof(FamMusic) + bank_count * sizeof(DPCMSampleBank) + op_count * sizeof(StreamOperation);
-
+    // Collect the bank sizes (a pass over the bank region) so we can size the allocation
+    uint32_t bank_sizes[MAX_DPCM_BANK_COUNT];
     if (bank_count > 0) {
         buffer_reader_seek(&reader, bank_offset);
         for (size_t i = 0; i < bank_count && !reader.error; i++) {
@@ -176,11 +104,10 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
             buffer_reader_read(&reader, &bank_size, sizeof(uint32_t));
             if (reader.error || 
                 bank_size > buffer_reader_remaining(&reader) || 
-                bank_size > MAX_DPCM_SAMPLE_BANK_SIZE ||
-                bank_size > SIZE_MAX - memory_size) {
+                bank_size > MAX_DPCM_SAMPLE_BANK_SIZE) {
                 return FAM_ERROR_INVALID_FORMAT;
             }
-            memory_size += bank_size;
+            bank_sizes[i] = bank_size;
             buffer_reader_skip(&reader, bank_size);
         }
     }
@@ -189,45 +116,27 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    void* memory = malloc(memory_size);
-    if (memory == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+    FamMusic* music;
+    err = music_init(&music, channel_mask, loop_point, bank_count, bank_sizes, op_count);
+    if (err != FAM_SUCCESS) {
+        if (err == FAM_ERROR_OUT_OF_MEMORY) return err;
+        return FAM_ERROR_INVALID_FORMAT;
     }
-
-    FamMusic* music = (FamMusic*)memory;
-    music->channel_mask = channel_mask;
-    music->dpcm_sample_bank_count = bank_count;
-    music->dpcm_sample_banks = NULL;
-    music->stream_op_count = op_count;
-    music->stream = NULL;
-    music->loop_point = loop_point;
-
-    uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamMusic);
 
     // Read DPCM sample banks
     if (bank_count > 0) {
-        music->dpcm_sample_banks = (DPCMSampleBank*)mem_pos;
-        mem_pos += sizeof(DPCMSampleBank) * bank_count;
-
         buffer_reader_seek(&reader, bank_offset);
-        for (size_t i = 0; i < bank_count && !reader.error; i++) {
-            DPCMSampleBank* bank = &music->dpcm_sample_banks[i];
-            buffer_reader_read(&reader, &bank->size, sizeof(uint32_t));
-            
-            if (bank->size == 0) {
-                bank->data = NULL;
-            } else {
-                bank->data = mem_pos;
-                buffer_reader_read(&reader, bank->data, bank->size);
-                mem_pos += bank->size;
+        for (size_t i = 0; i < bank_count; i++) {
+            uint32_t bank_size;
+            buffer_reader_read(&reader, &bank_size, sizeof(uint32_t));
+            if (music->dpcm_sample_banks[i].data != NULL) {
+                buffer_reader_read(&reader, music->dpcm_sample_banks[i].data, music->dpcm_sample_banks[i].size);
             }
         }
     }
 
     // Read stream ops
     if (op_count > 0) {
-        music->stream = (StreamOperation*)mem_pos;
-    
         buffer_reader_seek(&reader, stream_offset);
         for (size_t i = 0; i < op_count && !reader.error; i++) {
             StreamOperation op = {0};
@@ -238,7 +147,7 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     }
     
     if (reader.error) {
-        free(memory);
+        fam_music_free(music);
         return FAM_ERROR_INVALID_FORMAT;
     }
 

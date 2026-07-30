@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 #define MUSIC_NO_LOOP UINT32_MAX
 #define SFX_CHANNEL_COUNT 4

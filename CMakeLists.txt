@@ -4,7 +4,7 @@ project(fam)
 option(FAM_BUILD_EXAMPLES "Build examples" OFF)
 option(FAM_BUILD_TESTS "Build tests" OFF)
 
-add_library(fam STATIC src/apu.c src/player.c src/io.c)
+add_library(fam STATIC src/apu.c src/player.c src/io.c src/ftm.c src/ftm_convert.c)
 target_include_directories(fam PUBLIC include PRIVATE internal)
 
 if(FAM_BUILD_EXAMPLES)
