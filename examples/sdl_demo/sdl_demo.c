@@ -531,6 +531,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\superfusion.vgm");
+    if (err != FAM_SUCCESS) {
+        printf("Loading vgm failed with error code %d\n", err);
+        return 1;
+    }
+
     FamSfx* sfx_pulse1;
     err = fam_sfx_from_buffer(&sfx_pulse1, sizeof(sfx_pulse1_data), sfx_pulse1_data);
     if (err != FAM_SUCCESS) {
