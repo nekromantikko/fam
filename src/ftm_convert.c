@@ -9,29 +9,59 @@
 #include <string.h>
 #include <stdbool.h>
 
+#define VOL_SHIFT 3
+
+typedef enum {
+    SEQ_DISABLED = 0,
+	SEQ_RUNNING,
+	SEQ_END,
+	SEQ_HALT
+} SequenceState;
+
+// Instrument sequence types. Order matches FtInstrument.seq_raw / FtSequenceGroup.eff_raw.
+typedef enum {
+    FT_SEQ_VOLUME = 0,
+    FT_SEQ_ARPEGGIO,
+    FT_SEQ_PITCH,
+    FT_SEQ_HIPITCH,
+    FT_SEQ_DUTY,
+    FT_SEQ_COUNT
+} FtSequenceType;
+
+// Runtime state for one instrument sequence running on a channel.
+typedef struct {
+    SequenceState state;
+    uint16_t pointer;         // current position in the sequence
+    const FtSequenceEff* seq; // sequence data, or NULL if none
+} SequenceRuntime;
+
 // Runtime state for one channel column during conversion.
 typedef struct {
-    uint32_t channel_id;    // FT_CHAN_ID_* this column maps to
-    bool gate;              // a note is currently sounding
-    uint8_t volume;         // note-column volume, 0..15
-    uint8_t instrument;     // running instrument (FT_MAX_INSTRUMENTS = none)
+    uint32_t channel_id;        // FT_CHAN_ID_* this column maps to
+    bool gate;                  // a note is currently sounding
+    uint8_t volume;             // note-column volume, 0..15, shifted left by 3 (0-127 range) for finer volume slides
+    uint8_t instrument;         // running instrument (FT_MAX_INSTRUMENTS = none)
 
-    int32_t base_period;    // period of the current note (before effects)
-    int32_t max_period;     // clamp bound for this channel
-    int32_t max_volume;     // clamp bound for this channel
+    uint8_t seq_volume;         // volume value from instrument sequence 
+
+    int32_t base_period;        // period of the current note (before effects)
+    int32_t max_period;         // clamp bound for this channel
+    int32_t max_volume;         // clamp bound for this channel
 
     // Duty
-    uint8_t duty_period;    // current duty, 0..3
-    uint8_t default_duty;   // Vxx
+    uint8_t duty_period;        // current duty, 0..3
+    uint8_t default_duty;       // Vxx
 
     // Effects (populated in 5d)
     uint32_t vibrato_depth;
     uint32_t vibrato_speed;
     uint32_t vibrato_phase;
-    int8_t pitch_offset;    // Pxx
-    uint8_t volume_slide;   // Axy
-    uint8_t note_cut;       // Sxx
-} FtChannelState;
+    int8_t pitch_offset;        // Pxx
+    uint8_t volume_slide;       // Axy
+    uint8_t note_cut;           // Sxx
+
+    SequenceRuntime sequences[FT_SEQ_COUNT]; // volume / arpeggio / pitch / hi-pitch / duty
+} ChannelRuntime;
 
 // Where a used sample ends up once packed into a track's DPCM banks. The three
 // register fields feed the stream operations emitted during playback conversion.
@@ -39,7 +69,7 @@ typedef struct {
     uint8_t bank;       // Bank index -> OP_SWITCH_SAMPLE_BANK
     uint8_t addr;       // Start address in 64-byte units -> $4012 (OP_DMC_WRITE2)
     uint8_t length;     // Length in 16-byte units -> $4013 (OP_DMC_WRITE3)
-} FtSamplePlacement;
+} SamplePlacement;
 
 // Control-flow effects found on a row: Bxx (jump), Cxx (halt), Dxx (skip).
 typedef struct {
@@ -51,8 +81,8 @@ typedef struct {
 typedef struct {
     int reg_shadow[0x14];  // last emitted $4000-$4013 byte; -1 = force the next write
     bool vibrato_mode;     // FT_VIBRATO_NEW vs OLD (module-wide)
-    FtChannelState channels[FT_CHAN_COUNT];
-} SimState;
+    ChannelRuntime channels[FT_CHAN_COUNT];
+} PlaybackState;
 
 static const uint32_t FT_NOTE_TABLE_NTSC[FT_NOTE_COUNT] = {
     0xD5B, 0xC9C, 0xBE6, 0xB3B, 0xA9A, 0xA01, 0x972, 0x8EA, 
@@ -191,7 +221,7 @@ static inline int32_t max_period_from_channel_id(int32_t channel_id) {
     return 0;
 }
 
-static inline int32_t channel_get_vibrato(const FtChannelState* channel, bool mode) {
+static inline int32_t channel_get_vibrato(const ChannelRuntime* channel, bool mode) {
     if (channel->vibrato_depth == 0) {
         return 0;
     }
@@ -234,8 +264,38 @@ static inline int32_t clamp_period(int32_t period, int32_t max_period) {
     return period;
 }
 
-static inline int32_t channel_calculate_period(const FtChannelState* channel, bool vibrato_mode) {
+static inline int32_t channel_calculate_period(const ChannelRuntime* channel, bool vibrato_mode) {
     return clamp_period(channel->base_period - channel_get_vibrato(channel, vibrato_mode) + channel->pitch_offset, channel->max_period);
+}
+
+static inline int32_t channel_get_tremolo(const ChannelRuntime* channel) {
+    // TODO!
+    return 0;
+}
+
+static inline int32_t clamp_volume(int32_t volume, int32_t max_volume) {
+    if (volume < 0) {
+        volume = 0;
+    } else if (volume > max_volume) {
+        volume = max_volume;
+    }
+    return volume;
+}
+
+static inline int32_t channel_calculate_volume(const ChannelRuntime* channel) {
+    if (!channel->gate) {
+        return 0;
+    }
+
+    int32_t volume = channel->volume >> VOL_SHIFT;
+    volume = clamp_volume((volume * channel->seq_volume) / 15 - channel_get_tremolo(channel), channel->max_volume);
+
+    // If both inputs > 0, output at least 1
+    if (volume == 0 && channel->seq_volume > 0 && channel->volume > 0) {
+        return 1;
+    }
+
+    return volume;
 }
 
 static uint64_t channel_mask_from_ftm_channel_id(uint32_t channel_id) {
@@ -346,7 +406,7 @@ static void scan_used_samples(const FamFtModule* module, const FtTrack* track, b
 static FamResult compute_sample_banks(
     const FamFtModule* module,
     const bool* used,
-    FtSamplePlacement* placements,
+    SamplePlacement* placements,
     uint32_t* bank_sizes,
     uint32_t* out_bank_count) {
 
@@ -391,7 +451,7 @@ static FamResult compute_sample_banks(
 static void fill_sample_banks(
     const FamFtModule* module,
     const bool* used,
-    const FtSamplePlacement* placements,
+    const SamplePlacement* placements,
     DPCMSampleBank* banks) {
 
     for (int s = 0; s < FT_MAX_DPCM_SAMPLES; s++) {
@@ -444,7 +504,7 @@ static int32_t note_to_period(uint8_t note, uint8_t octave) {
 
 // Emits an APU register write only if the value changed since the last emission. The stream
 // opcode for a $40xx write is simply (reg - 0x4000).
-static FamResult emit_reg(SimState* sim, GrowBuffer* buffer, int reg, uint8_t value) {
+static FamResult emit_reg(PlaybackState* sim, GrowBuffer* buffer, int reg, uint8_t value) {
     int idx = reg - 0x4000;
     if (sim->reg_shadow[idx] == (int)value) {
         return FAM_SUCCESS;
@@ -455,18 +515,102 @@ static FamResult emit_reg(SimState* sim, GrowBuffer* buffer, int reg, uint8_t va
 
 // Forces the next write to `reg` to be emitted regardless of value. Used on gate-off so the
 // next note re-triggers, mirroring FamiTracker resetting m_iLastPeriod to 0xFFFF.
-static void force_reg(SimState* sim, int reg) {
+static void force_reg(PlaybackState* sim, int reg) {
     sim->reg_shadow[reg - 0x4000] = -1;
 }
 
-// Applies a row's note data to a channel's running state: note trigger, volume column,
-// instrument, and the Vxx duty effect. Instrument sequences and other effects come in 5c/5d.
-static void apply_channel_row(FtChannelState* ch, const FtNote* note) {
+// Sets up a channel's instrument sequences on a note trigger. Enabled, non-empty sequences
+// start running; the rest are disabled. seq_volume resets to full so a note with no volume
+// envelope plays at its column volume.
+static void setup_sequences(ChannelRuntime* ch, const FamFtModule* module) {
+    ch->seq_volume = 15;
+
+    const FtInstrument* inst = (ch->instrument < FT_MAX_INSTRUMENTS)
+        ? &module->instruments[ch->instrument] : NULL;
+
+    for (int t = 0; t < FT_SEQ_COUNT; t++) {
+        SequenceRuntime* sr = &ch->sequences[t];
+        const FtSequenceEff* seq = NULL;
+        if (inst != NULL && inst->type == FT_INSTRUMENT_2A03 && inst->seq_raw[t].enabled) {
+            const FtSequenceEff* candidate = &module->sequences[inst->seq_raw[t].index].eff_raw[t];
+            if (candidate->length > 0) {
+                seq = candidate;
+            }
+        }
+        sr->seq = seq;
+        sr->pointer = 0;
+        sr->state = (seq != NULL) ? SEQ_RUNNING : SEQ_DISABLED;
+    }
+}
+
+// Advances one running sequence by a tick, applying its current value to the channel.
+// Mirrors FamiTracker's CSequenceHandler::UpdateSequenceRunning.
+static void update_sequence_running(ChannelRuntime* ch, int type) {
+    SequenceRuntime* sr = &ch->sequences[type];
+    const FtSequenceEff* seq = sr->seq;
+    int8_t value = seq->values[sr->pointer];
+
+    switch (type) {
+        case FT_SEQ_VOLUME: ch->seq_volume = (uint8_t)value; break;
+        case FT_SEQ_DUTY:   ch->duty_period = (uint8_t)value; break;
+        // TODO(5c-2): FT_SEQ_ARPEGGIO / FT_SEQ_PITCH / FT_SEQ_HIPITCH modify the period.
+        default: break;
+    }
+
+    sr->pointer++;
+
+    const uint32_t items = seq->length;
+    const uint32_t loop = seq->loop_point;
+    const uint32_t release = seq->release_point;
+    const bool releasing = false; // TODO(5c-2): release-phase sequences
+
+    // (release + 1) wraps to 0 when release == UINT32_MAX (no release); pointer is >= 1 here,
+    // so that comparison is simply never true, matching FamiTracker's Release == -1 case.
+    if (sr->pointer == (uint32_t)(release + 1) || sr->pointer >= items) {
+        if (loop != UINT32_MAX && !(releasing && release != UINT32_MAX)) {
+            sr->pointer = (uint16_t)loop;
+        } else if (sr->pointer >= items) {
+            sr->state = SEQ_END;
+        } else if (!releasing) {
+            sr->pointer--; // hold at the release point until released
+        }
+    }
+}
+
+// Runs one instrument sequence for a tick based on its state.
+static void run_sequence(ChannelRuntime* ch, int type) {
+    SequenceRuntime* sr = &ch->sequences[type];
+    if (sr->seq == NULL || sr->seq->length == 0 || !ch->gate) {
+        return;
+    }
+    switch (sr->state) {
+        case SEQ_RUNNING:
+            update_sequence_running(ch, type);
+            break;
+        case SEQ_END:
+            // TODO(5c-2): a fixed arpeggio re-triggers its period here before halting.
+            sr->state = SEQ_HALT;
+            break;
+        default: // SEQ_DISABLED, SEQ_HALT
+            break;
+    }
+}
+
+// Advances all of a channel's instrument sequences by one tick.
+static void run_sequences(ChannelRuntime* ch) {
+    for (int t = 0; t < FT_SEQ_COUNT; t++) {
+        run_sequence(ch, t);
+    }
+}
+
+// Applies a row's note data to a channel's running state: note trigger (which restarts the
+// instrument's sequences), volume column, instrument, and the Vxx duty effect.
+static void apply_channel_row(ChannelRuntime* ch, const FtNote* note, const FamFtModule* module) {
     if (note == NULL) {
         return;
     }
     if (note->volume <= 0x0F) { // 0x10 (MAX_VOLUME) means "no change"
-        ch->volume = note->volume;
+        ch->volume = note->volume << VOL_SHIFT;
     }
     if (note->instrument < FT_MAX_INSTRUMENTS) {
         ch->instrument = note->instrument;
@@ -479,20 +623,18 @@ static void apply_channel_row(FtChannelState* ch, const FtNote* note) {
     if (note->note >= FT_NOTE_C && note->note <= FT_NOTE_B) {
         ch->base_period = note_to_period(note->note, note->octave);
         ch->gate = true;
+        setup_sequences(ch, module);
     } else if (note->note == FT_NOTE_HALT || note->note == FT_NOTE_RELEASE) {
-        ch->gate = false; // TODO(5c): release should run the sequence's release phase
+        ch->gate = false; // TODO(5c-2): release should run the sequence's release phase
     }
 }
 
 // Emits a pulse channel's registers for this tick (diff-based). Register layout mirrors
 // FamiTracker's CSquareChan::RefreshChannel.
-static FamResult tick_pulse(SimState* sim, FtChannelState* ch, GrowBuffer* buffer) {
+static FamResult tick_pulse(PlaybackState* sim, ChannelRuntime* ch, GrowBuffer* buffer) {
     const int reg = (ch->channel_id == FT_CHAN_ID_SQUARE1) ? 0x4000 : 0x4004;
     int32_t period = channel_calculate_period(ch, sim->vibrato_mode); // clamps to max_period
-    int volume = ch->gate ? ch->volume : 0; // TODO(5c): instrument volume sequence
-    if (volume > ch->max_volume) {
-        volume = ch->max_volume;
-    }
+    int32_t volume = channel_calculate_volume(ch);
 
     if (volume <= 0) {
         // Silent: mute via $4000, and force $4003 on the next note so it re-triggers.
@@ -510,7 +652,8 @@ static FamResult tick_pulse(SimState* sim, FtChannelState* ch, GrowBuffer* buffe
 
 // Ticks one channel, emitting its register writes. Only pulse channels so far
 // (triangle/noise = 5e, DPCM = 5f).
-static FamResult tick_channel(SimState* sim, FtChannelState* ch, GrowBuffer* buffer) {
+static FamResult tick_channel(PlaybackState* sim, ChannelRuntime* ch, GrowBuffer* buffer) {
+    run_sequences(ch); // advance instrument envelopes (volume/duty; arp/pitch in 5c-2)
     switch (ch->channel_id) {
         case FT_CHAN_ID_SQUARE1:
         case FT_CHAN_ID_SQUARE2:
@@ -553,17 +696,18 @@ static FamResult simulate_track(const FamFtModule* module, const FtTrack* track,
         return FAM_ERROR_OUT_OF_MEMORY;
     }
 
-    SimState sim;
+    PlaybackState sim;
     for (int i = 0; i < 0x14; i++) {
         sim.reg_shadow[i] = -1;
     }
     sim.vibrato_mode = (module->vibrato_style == FT_VIBRATO_NEW);
     for (uint32_t col = 0; col < track->channel_count; col++) {
         int32_t channel_id = module->channels[col];
-        sim.channels[col] = (FtChannelState){
+        sim.channels[col] = (ChannelRuntime){
             .channel_id = (uint32_t)channel_id,
             .gate = false,
-            .volume = 15,
+            .volume = 15 << VOL_SHIFT,
+            .seq_volume = 15,
             .instrument = FT_MAX_INSTRUMENTS,
             .max_period = max_period_from_channel_id(channel_id),
             .max_volume = max_volume_from_channel_id(channel_id),
@@ -610,12 +754,16 @@ static FamResult simulate_track(const FamFtModule* module, const FtTrack* track,
             // Apply the row's note data to each channel's running state.
             for (uint32_t col = 0; col < track->channel_count; col++) {
                 uint8_t pattern = track->frames[play_frame * track->channel_count + col];
-                apply_channel_row(&sim.channels[col], track_get_note(track, pattern, col, play_row));
+                apply_channel_row(&sim.channels[col], track_get_note(track, pattern, col, play_row), module);
             }
         }
 
         // Tick each channel and emit its changed register writes.
         for (uint32_t col = 0; col < track->channel_count; col++) {
+            // TODO: Effects + Sequences (CChannelHandler::ProcessChannel)
+
+
+
             result = tick_channel(&sim, &sim.channels[col], buffer);
             if (result != FAM_SUCCESS) {
                 break;
@@ -667,7 +815,7 @@ FamResult fam_music_from_ftmodule_track(FamMusic** out_music, const FamFtModule*
     bool used[FT_MAX_DPCM_SAMPLES] = {0};
     scan_used_samples(module, track, used);
 
-    FtSamplePlacement placements[FT_MAX_DPCM_SAMPLES] = {0};
+    SamplePlacement placements[FT_MAX_DPCM_SAMPLES] = {0};
     uint32_t bank_sizes[MAX_DPCM_BANK_COUNT] = {0};
     uint32_t bank_count = 0;
     FamResult result = compute_sample_banks(module, used, placements, bank_sizes, &bank_count);

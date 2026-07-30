@@ -631,6 +631,15 @@ static FamResult block_read_patterns(BufferReader* reader, uint32_t block_versio
             if (track->pattern_pool == NULL) {
                 return FAM_ERROR_OUT_OF_MEMORY;
             }
+            // Rows not present in the file stay at these defaults, which mean "no change":
+            // an empty volume column is 0x10 (> 0x0F) and an empty instrument column is
+            // FT_MAX_INSTRUMENTS. Leaving them calloc-zeroed would instead read as an
+            // explicit "volume 0 / instrument 0" on every empty row.
+            const size_t note_count = (size_t)pool_count[t] * track->pattern_length;
+            for (size_t n = 0; n < note_count; n++) {
+                track->pattern_pool[n].volume = 0x10;
+                track->pattern_pool[n].instrument = FT_MAX_INSTRUMENTS;
+            }
         }
     }
 

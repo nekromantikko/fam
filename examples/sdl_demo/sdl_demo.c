@@ -556,7 +556,7 @@ int main(int argc, char **argv) {
 
     FamFtModule* module;
     FamMusic* ftm_music = NULL;
-    err = fam_ftmodule_from_file(&module, "C:\\Users\\jonah\\Downloads\\FamiTracker-v0.4.6\\Demo songs\\2A03_Necrophageon-Neon_Starlight.ftm");
+    err = fam_ftmodule_from_file(&module, "C:\\Users\\jonah\\Downloads\\FamiTracker-v0.4.6\\Demo songs\\VRC6_Ares64-smurfity smurf.ftm");
     if (err == FAM_SUCCESS) {
         size_t ftm_track_count = fam_ftmodule_track_count(module);
         printf("FTM file loaded successfully! Track count: %zu\n", ftm_track_count);
@@ -592,25 +592,25 @@ int main(int argc, char **argv) {
     FamMusic* play_music = ftm_music ? ftm_music : music;
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, play_music);
 
-    SDL_Delay(1000);
+    // SDL_Delay(1000);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
 
-    SDL_Delay(250);
+    // SDL_Delay(250);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(500);
+    // SDL_Delay(500);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
 
-    SDL_Delay(1000);
+    // SDL_Delay(1000);
 
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(200000);
+    SDL_Delay(50000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
