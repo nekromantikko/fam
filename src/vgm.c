@@ -32,6 +32,8 @@
 #define VGM_CMD_NES_APU      0xB4   // followed by register offset + value
 // 0x70..0x7F: wait (low nibble + 1) samples
 
+#define VGM_DATA_BLOCK_NES_DPCM 0xC2  // 0x67 data block type: NES APU DPCM sample RAM write
+
 typedef struct {
     uint32_t version;
     uint32_t data_offset;   // absolute
@@ -45,6 +47,9 @@ typedef struct {
     StreamOperation* stream;
     uint32_t count;
     uint64_t channel_mask;
+    uint8_t* dpcm;       // MAX_DPCM_SAMPLE_BANK_SIZE scratch for the $C000-$FFFF sample RAM,
+                         // or NULL to skip bank building on this pass
+    uint32_t dpcm_size;  // bytes actually populated (highest write extent)
 } StreamWriter;
 
 static FamResult read_u32_at(BufferReader* reader, size_t offset, uint32_t* out) {
@@ -153,13 +158,19 @@ static FamResult walk_commands(BufferReader* reader, const VgmHeader* hdr, Strea
                 uint8_t reg, value;
                 buffer_reader_read(reader, &reg, 1);
                 buffer_reader_read(reader, &value, 1);
-                // reg is the offset from $4000, which is exactly our opcode numbering.
-                // 0x00-0x0F = pulse1/pulse2/triangle/noise. DMC ($4010-$4013), status
-                // ($4015) and the frame counter ($4017) are deferred / player-derived.
-                if (reg <= OP_NOISE_WRITE3) {
+                // reg is the offset from $4000, which is exactly our opcode numbering for the
+                // channel register writes: $4000-$4013 -> OP_PULSE1_WRITE0 .. OP_DMC_WRITE3.
+                if (reg <= OP_DMC_WRITE3) {
                     result = emit(w, reg, value);
                     w->channel_mask |= (uint64_t)1 << (reg >> 2);
+                } else if (reg == 0x15) {
+                    // $4015 channel enables -> OP_STATUS_WRITE. Emit every write, not just
+                    // changes: a repeated value can be a DMC re-trigger. The channel mask
+                    // must cover every channel a status write is allowed to enable.
+                    result = emit(w, OP_STATUS_WRITE, value & 0x1F);
+                    w->channel_mask |= value & 0x1F;
                 }
+                // $4017 (frame counter) and $4014 (OAM DMA, non-audio) are ignored.
                 break;
             }
             case VGM_CMD_WAIT_N: {
@@ -178,15 +189,50 @@ static FamResult walk_commands(BufferReader* reader, const VgmHeader* hdr, Strea
                 done = true;
                 break;
             case VGM_CMD_DATA_BLOCK: {
-                // 0x67 0x66 tt ss ss ss ss <ss bytes> (DPCM PCM data, deferred with DMC)
+                // 0x67 0x66 tt ss(4) <ss bytes>. Type 0xC2 is a NES APU DPCM RAM write, whose
+                // payload is <start_addr:2> <data>; copy that into the sample bank. Other block
+                // types (and pass 2, where dpcm is NULL) just skip the payload.
                 uint8_t compat, type;
                 uint32_t size;
                 buffer_reader_read(reader, &compat, 1);
                 buffer_reader_read(reader, &type, 1);
                 buffer_reader_read(reader, &size, sizeof(uint32_t));
-                buffer_reader_skip(reader, size);
+
+                if (type == VGM_DATA_BLOCK_NES_DPCM && size >= 2 && w->dpcm != NULL) {
+                    uint16_t start_addr;
+                    buffer_reader_read(reader, &start_addr, sizeof(uint16_t));
+                    uint32_t data_size = size - 2;
+                    // The DPCM sample space is $C000-$FFFF, which the bank represents 0-based.
+                    if (start_addr >= 0xC000) {
+                        uint32_t offset = (uint32_t)(start_addr - 0xC000);
+                        uint32_t n = (offset + data_size > MAX_DPCM_SAMPLE_BANK_SIZE)
+                                   ? MAX_DPCM_SAMPLE_BANK_SIZE - offset : data_size;
+                        buffer_reader_read(reader, w->dpcm + offset, n);
+                        buffer_reader_skip(reader, data_size - n); // drop any overflow tail
+                        if (offset + n > w->dpcm_size) {
+                            w->dpcm_size = offset + n;
+                        }
+                    } else {
+                        buffer_reader_skip(reader, data_size);
+                    }
+                } else {
+                    buffer_reader_skip(reader, size);
+                }
                 break;
             }
+            // DAC stream control (0x90-0x95) + PCM bank seek (0xE0). Trackers like Furnace use
+            // these to play samples as PCM through a chip register (e.g. NES $4011). We don't
+            // expand DAC streams into register writes yet, so we skip them at their fixed operand
+            // lengths: a stream that's only set up (no 0x93/0x95 start) loses nothing, and an
+            // actually-played stream is silent while the rest of the track plays.
+            case 0x90: buffer_reader_skip(reader, 4); break;  // setup stream control
+            case 0x91: buffer_reader_skip(reader, 4); break;  // set stream data
+            case 0x92: buffer_reader_skip(reader, 5); break;  // set stream frequency
+            case 0x93: buffer_reader_skip(reader, 10); break; // start stream
+            case 0x94: buffer_reader_skip(reader, 1); break;  // stop stream
+            case 0x95: buffer_reader_skip(reader, 4); break;  // start stream (fast)
+            case 0xE0: buffer_reader_skip(reader, 4); break;  // seek PCM data bank
+
             default:
                 if (cmd >= 0x70 && cmd <= 0x7F) {
                     sample_accum += (cmd & 0x0F) + 1; // wait 1..16 samples
@@ -239,37 +285,68 @@ FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, co
     uint8_t machine = machine_from_nes_clock(hdr.nes_clock);
     const uint32_t samples_per_frame = machine == FAM_MACHINE_NTSC ? VGM_SAMPLES_PER_FRAME_NTSC : VGM_SAMPLES_PER_FRAME_PAL;
 
-    // Pass 1: count ops (and find the loop point) so we can size the allocation.
+    // Pass 1: count ops, find the loop point, and gather the DPCM sample RAM, so we can size
+    // the allocation. The scratch bank is the full 16 KB $C000-$FFFF window.
+    uint8_t* dpcm_scratch = (uint8_t*)calloc(MAX_DPCM_SAMPLE_BANK_SIZE, 1);
+    if (dpcm_scratch == NULL) {
+        return FAM_ERROR_OUT_OF_MEMORY;
+    }
+
     BufferReader count_reader = buffer_reader_init(buffer, buffer_size);
-    StreamWriter counter = {0};
+    StreamWriter counter = { .dpcm = dpcm_scratch };
     uint32_t loop_point;
     result = walk_commands(&count_reader, &hdr, &counter, &loop_point, samples_per_frame);
     if (result != FAM_SUCCESS) {
+        free(dpcm_scratch);
         return result;
     }
     const uint32_t op_count = counter.count;
+    const uint32_t bank_count = (counter.dpcm_size > 0) ? 1 : 0;
 
-    printf("VGM: %u stream ops, loop point %u, channel mask %llu\n",
-        op_count, loop_point, (unsigned long long)counter.channel_mask);
+    printf("VGM: %u stream ops, loop point %u, channel mask %llu, %u DPCM bytes\n",
+        op_count, loop_point, (unsigned long long)counter.channel_mask, counter.dpcm_size);
 
-    // NOTE: sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank); holds while
-    // it is a multiple of 8. No DPCM banks yet, so the stream follows the struct directly.
-    size_t memory_size = sizeof(FamMusic) + (size_t)op_count * sizeof(StreamOperation);
+    // Single contiguous block: struct + bank array + bank data + stream (mirrors io.c).
+    // NOTE: sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank); holds while it is a
+    // multiple of 8. Bank data and the stream are byte-aligned, so they can follow freely.
+    size_t memory_size = sizeof(FamMusic)
+        + (size_t)bank_count * sizeof(DPCMSampleBank)
+        + (size_t)counter.dpcm_size
+        + (size_t)op_count * sizeof(StreamOperation);
     void* memory = malloc(memory_size);
     if (memory == NULL) {
+        free(dpcm_scratch);
         return FAM_ERROR_OUT_OF_MEMORY;
     }
 
     FamMusic* music = (FamMusic*)memory;
     music->channel_mask = counter.channel_mask;
-    music->dpcm_sample_bank_count = 0;
+    music->dpcm_sample_bank_count = bank_count;
     music->dpcm_sample_banks = NULL;
     music->stream_op_count = op_count;
-    music->stream = (op_count > 0) ? (StreamOperation*)((uint8_t*)memory + sizeof(FamMusic)) : NULL;
+    music->stream = NULL;
     music->loop_point = (loop_point != MUSIC_NO_LOOP && loop_point < op_count) ? loop_point : MUSIC_NO_LOOP;
     music->machine = machine;
 
-    // Pass 2: emit the ops into the allocated stream.
+    uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamMusic);
+
+    if (bank_count > 0) {
+        music->dpcm_sample_banks = (DPCMSampleBank*)mem_pos;
+        mem_pos += sizeof(DPCMSampleBank) * bank_count;
+
+        music->dpcm_sample_banks[0].size = counter.dpcm_size;
+        music->dpcm_sample_banks[0].data = mem_pos;
+        memcpy(mem_pos, dpcm_scratch, counter.dpcm_size);
+        mem_pos += counter.dpcm_size;
+    }
+
+    free(dpcm_scratch);
+
+    if (op_count > 0) {
+        music->stream = (StreamOperation*)mem_pos;
+    }
+
+    // Pass 2: emit the ops into the allocated stream (the bank is already built, so dpcm=NULL).
     BufferReader emit_reader = buffer_reader_init(buffer, buffer_size);
     StreamWriter writer = { .stream = music->stream };
     result = walk_commands(&emit_reader, &hdr, &writer, &loop_point, samples_per_frame);
