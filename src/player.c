@@ -12,6 +12,8 @@ struct FamPlayer {
     uint32_t music_pos;
     uint8_t music_skip_counter;
     int8_t music_dpcm_sample_bank;
+    uint8_t music_status;         // the music's desired $4015 (channel enables); driven by OP_STATUS_WRITE
+    uint8_t last_status_written;  // last value pushed to $4015, for diffing SFX-driven updates
     bool music_paused;
 
     // Shadow state to track the music's "real" register state
@@ -76,20 +78,28 @@ static void player_restore_reserve(FamPlayer* player, int channel) {
     }
 }
 
-static void player_update_status_register(FamPlayer* player) {
+static void player_update_status_register(FamPlayer* player, bool force) {
     uint8_t status = 0;
 
     if (player->music != NULL) {
-        status |= player->music->channel_mask & 0x1F;
+        // The music's desired channel enables (tone bits 0-3 + DMC bit 4). Driven by
+        // OP_STATUS_WRITE, or the channel mask until the stream writes one.
+        status |= player->music_status & 0x1F;
     }
 
     for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
         if (player->sfx[i] != NULL) {
-            status |= 1 << i;
+            status |= 1 << i;   // an active SFX force-enables its channel
         }
     }
 
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, status);
+    // An explicit OP_STATUS_WRITE forces the write, since a repeated value can be a DMC
+    // re-trigger. SFX-driven updates diff instead, so they never re-assert bit 4 and
+    // disturb the DMC (SFX only own channels 0-3).
+    if (force || status != player->last_status_written) {
+        fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, status);
+        player->last_status_written = status;
+    }
 }
 
 static void player_silence_music(FamPlayer* player) {
@@ -193,8 +203,9 @@ static void player_process_music(FamPlayer* player) {
                     fam_apu_write_register(player->apu, 0x4010 + offset, op.data);
                     break;
                 }
-            case OP_DMC_PLAY_SAMPLE:
-                player_update_status_register(player);
+            case OP_STATUS_WRITE:
+                player->music_status = op.data & 0x1F;
+                player_update_status_register(player, true);
                 break;
             case OP_SWITCH_SAMPLE_BANK:
                 player->music_dpcm_sample_bank = (int8_t)op.data;
@@ -283,7 +294,8 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_DMC_WRITE1:
             case OP_DMC_WRITE2:
             case OP_DMC_WRITE3:
-            case OP_DMC_PLAY_SAMPLE:
+            case OP_SWITCH_SAMPLE_BANK:
+            case OP_STATUS_WRITE:
                 break;
 
             case OP_ENDFRAME:
@@ -301,7 +313,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
 endstream:
 
     player->sfx[channel] = NULL;
-    player_update_status_register(player);
+    player_update_status_register(player, false);
     player_restore_reserve(player, channel);
 
     // Re-mute paused music after reserve restore
@@ -389,12 +401,14 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     player->music_pos = 0;
     player->music_skip_counter = 0;
     player->music_paused = false;
+    // Until the stream issues an OP_STATUS_WRITE, enable the channels the song declares it uses.
+    player->music_status = (uint8_t)(music->channel_mask & 0x1F);
     player->music_dpcm_sample_bank = music->dpcm_sample_bank_count == 0 ? -1 : 0;
 
     // Reset reserve state
     player_clear_reserve(player);
 
-    player_update_status_register(player);
+    player_update_status_register(player, true);
 }
 
 void fam_player_pause_music(FamPlayer* player) {
@@ -439,7 +453,7 @@ void fam_player_stop_music(FamPlayer* player) {
 
     player->music = NULL;
 
-    player_update_status_register(player);
+    player_update_status_register(player, false);
 }
 
 void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
@@ -455,5 +469,5 @@ void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     player->sfx_pos[sfx->channel_id] = 0;
     player->sfx_skip_counter[sfx->channel_id] = 0;
 
-    player_update_status_register(player);
+    player_update_status_register(player, false);
 }

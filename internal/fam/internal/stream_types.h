@@ -50,8 +50,8 @@ typedef enum {
     OP_DMC_WRITE2           = 0x12,
     OP_DMC_WRITE3           = 0x13,
 
-    OP_DMC_PLAY_SAMPLE      = 0x14,
-    OP_SWITCH_SAMPLE_BANK   = 0x15,
+    OP_SWITCH_SAMPLE_BANK   = 0x14,
+    OP_STATUS_WRITE         = 0x15,
 
     OP_ENDFRAME             = 0xFE,
     OP_ENDSTREAM            = 0xFF,
