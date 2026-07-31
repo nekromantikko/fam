@@ -12,8 +12,6 @@ struct FamPlayer {
     uint32_t music_pos;
     uint8_t music_skip_counter;
     int8_t music_dpcm_sample_bank;
-    uint8_t music_status;         // the music's desired $4015 (channel enables); driven by OP_STATUS_WRITE
-    uint8_t last_status_written;  // last value pushed to $4015, for diffing SFX-driven updates
     bool music_paused;
 
     // Shadow state to track the music's "real" register state
@@ -22,14 +20,24 @@ struct FamPlayer {
     uint8_t reserve_triangle[4];
     uint8_t reserve_noise[4];
     uint8_t reserve_dmc[4];
+    uint8_t reserve_status;
 
     const FamSfx* sfx[SFX_CHANNEL_COUNT];
+    bool sfx_enabled[SFX_CHANNEL_COUNT]; // Affects APU channel status
     uint32_t sfx_pos[SFX_CHANNEL_COUNT];
     uint8_t sfx_skip_counter[SFX_CHANNEL_COUNT];
+
+    uint8_t last_status_written;
 
     double accumulator;
     double cycle_counter;
 };
+
+static bool player_is_sfx_active(FamPlayer* player, int channel) {
+    if (channel >= CHAN_COUNT) return false;
+
+    return player->sfx[channel] != NULL && player->sfx_enabled[channel];
+}
 
 static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_pulse1, 0, 4);
@@ -37,6 +45,7 @@ static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_triangle, 0, 4);
     memset(player->reserve_noise, 0, 4);
     memset(player->reserve_dmc, 0, 4);
+    player->reserve_status = 0;
 }
 
 // NOTE: This will retrigger notes by loading the length counters! Use only if necessary (Like after a sound effect stops)
@@ -82,33 +91,37 @@ static void player_update_status_register(FamPlayer* player, bool force) {
     uint8_t status = 0;
 
     if (player->music != NULL) {
-        // The music's desired channel enables (tone bits 0-3 + DMC bit 4). Driven by
-        // OP_STATUS_WRITE, or the channel mask until the stream writes one.
-        status |= player->music_status & 0x1F;
+        status |= player->reserve_status;
     }
 
     for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
-        if (player->sfx[i] != NULL) {
-            status |= 1 << i;   // an active SFX force-enables its channel
+        if (player_is_sfx_active(player, i)) {
+            status |= 1 << i;
         }
     }
 
-    // An explicit OP_STATUS_WRITE forces the write, since a repeated value can be a DMC
-    // re-trigger. SFX-driven updates diff instead, so they never re-assert bit 4 and
-    // disturb the DMC (SFX only own channels 0-3).
-    if (force || status != player->last_status_written) {
-        fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, status);
-        player->last_status_written = status;
+    uint8_t status_read;
+    fam_apu_read_register(player->apu, FAM_REGISTER_STATUS, &status_read);
+    
+    uint8_t turning_on = status & ~player->last_status_written;
+    uint8_t turning_off = player->last_status_written & ~status;
+    uint8_t still_audible = turning_off & status_read;
+    bool need_write = (turning_on | still_audible) != 0;
+
+    if (need_write || force) {
+        uint8_t to_write = force ? status : (status & ~CHAN_BIT_DMC) | (status_read & CHAN_BIT_DMC);
+        fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, to_write);
+        player->last_status_written = to_write;
     }
 }
 
 static void player_silence_music(FamPlayer* player) {
     // Mute pulses and noise by setting volume to 0 ($4000, $4004, $400C)
-    if (player->sfx[CHAN_ID_PULSE1] == NULL) fam_apu_write_register(player->apu, 0x4000, 0x30);
-    if (player->sfx[CHAN_ID_PULSE2] == NULL) fam_apu_write_register(player->apu, 0x4004, 0x30);
-    if (player->sfx[CHAN_ID_NOISE] == NULL) fam_apu_write_register(player->apu, 0x400C, 0x30);
+    if (!player_is_sfx_active(player, CHAN_ID_PULSE1)) fam_apu_write_register(player->apu, 0x4000, 0x30);
+    if (!player_is_sfx_active(player, CHAN_ID_PULSE2)) fam_apu_write_register(player->apu, 0x4004, 0x30);
+    if (!player_is_sfx_active(player, CHAN_ID_NOISE)) fam_apu_write_register(player->apu, 0x400C, 0x30);
     // Mute triangle by setting linear counter to 0 and halting ($4008)
-    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) fam_apu_write_register(player->apu, 0x4008, 0x80);
+    if (!player_is_sfx_active(player, CHAN_ID_TRIANGLE)) fam_apu_write_register(player->apu, 0x4008, 0x80);
 }
 
 static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
@@ -152,7 +165,7 @@ static void player_process_music(FamPlayer* player) {
                 {
                     int offset = op.opcode - OP_PULSE1_WRITE0;
                     player->reserve_pulse1[offset] = op.data;
-                    if (player->sfx[CHAN_ID_PULSE1] == NULL) {
+                    if (!player_is_sfx_active(player, CHAN_ID_PULSE1) && player->reserve_status & CHAN_BIT_PULSE1 != 0) {
                         fam_apu_write_register(player->apu, 0x4000 + offset, op.data);
                     }
                     break;
@@ -164,7 +177,7 @@ static void player_process_music(FamPlayer* player) {
                 {
                     int offset = op.opcode - OP_PULSE2_WRITE0;
                     player->reserve_pulse2[offset] = op.data;
-                    if (player->sfx[CHAN_ID_PULSE2] == NULL) {
+                    if (!player_is_sfx_active(player, CHAN_ID_PULSE2) && player->reserve_status & CHAN_BIT_PULSE2 != 0) {
                         fam_apu_write_register(player->apu, 0x4004 + offset, op.data);
                     }
                     break;
@@ -176,7 +189,7 @@ static void player_process_music(FamPlayer* player) {
                 {
                     int offset = op.opcode - OP_TRIANGLE_WRITE0;
                     player->reserve_triangle[offset] = op.data;
-                    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) {
+                    if (!player_is_sfx_active(player, CHAN_ID_TRIANGLE)  && player->reserve_status & CHAN_BIT_TRIANGLE != 0) {
                         fam_apu_write_register(player->apu, 0x4008 + offset, op.data);
                     }
                     break;
@@ -188,7 +201,7 @@ static void player_process_music(FamPlayer* player) {
                 {
                     int offset = op.opcode - OP_NOISE_WRITE0;
                     player->reserve_noise[offset] = op.data;
-                    if (player->sfx[CHAN_ID_NOISE] == NULL) {
+                    if (!player_is_sfx_active(player, CHAN_ID_NOISE) && player->reserve_status & CHAN_BIT_NOISE != 0) {
                         fam_apu_write_register(player->apu, 0x400C + offset, op.data);
                     }
                     break;
@@ -200,12 +213,14 @@ static void player_process_music(FamPlayer* player) {
                 {
                     int offset = op.opcode - OP_DMC_WRITE0;
                     player->reserve_dmc[offset] = op.data;
-                    fam_apu_write_register(player->apu, 0x4010 + offset, op.data);
+                    if (player->reserve_status & CHAN_BIT_DMC != 0) {
+                        fam_apu_write_register(player->apu, 0x4010 + offset, op.data);
+                    }
                     break;
                 }
             case OP_STATUS_WRITE:
-                player->music_status = op.data & 0x1F;
-                player_update_status_register(player, true);
+                player->reserve_status = op.data & (player->music->channel_mask & 0x1F);
+                player_update_status_register(player, op.data & CHAN_BIT_DMC != 0);
                 break;
             case OP_SWITCH_SAMPLE_BANK:
                 player->music_dpcm_sample_bank = (int8_t)op.data;
@@ -251,7 +266,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_PULSE1_WRITE2:
             case OP_PULSE1_WRITE3:
                 {
-                    if (channel != CHAN_ID_PULSE1) break;
+                    if (channel != CHAN_ID_PULSE1 || !player->sfx_enabled[channel]) break;
 
                     int offset = op.opcode - OP_PULSE1_WRITE0;
                     fam_apu_write_register(player->apu, 0x4000 + offset, op.data);
@@ -262,7 +277,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_PULSE2_WRITE2:
             case OP_PULSE2_WRITE3:
                 {
-                    if (channel != CHAN_ID_PULSE2) break;
+                    if (channel != CHAN_ID_PULSE2 || !player->sfx_enabled[channel]) break;
 
                     int offset = op.opcode - OP_PULSE2_WRITE0;
                     fam_apu_write_register(player->apu, 0x4004 + offset, op.data);
@@ -273,7 +288,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_TRIANGLE_WRITE2:
             case OP_TRIANGLE_WRITE3:
                 {
-                    if (channel != CHAN_ID_TRIANGLE) break;
+                    if (channel != CHAN_ID_TRIANGLE || !player->sfx_enabled[channel]) break;
 
                     int offset = op.opcode - OP_TRIANGLE_WRITE0;
                     fam_apu_write_register(player->apu, 0x4008 + offset, op.data);
@@ -284,7 +299,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_NOISE_WRITE2:
             case OP_NOISE_WRITE3:
                 {
-                    if (channel != CHAN_ID_NOISE) break;
+                    if (channel != CHAN_ID_NOISE || !player->sfx_enabled[channel]) break;
 
                     int offset = op.opcode - OP_NOISE_WRITE0;
                     fam_apu_write_register(player->apu, 0x400C + offset, op.data);
@@ -296,6 +311,9 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_DMC_WRITE3:
             case OP_SWITCH_SAMPLE_BANK:
             case OP_STATUS_WRITE:
+                {
+                    player->sfx_enabled[channel] = (op.data >> channel) & 1;
+                }
                 break;
 
             case OP_ENDFRAME:
@@ -313,6 +331,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
 endstream:
 
     player->sfx[channel] = NULL;
+    player->sfx_enabled[channel] = false;
     player_update_status_register(player, false);
     player_restore_reserve(player, channel);
 
@@ -401,8 +420,6 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     player->music_pos = 0;
     player->music_skip_counter = 0;
     player->music_paused = false;
-    // Until the stream issues an OP_STATUS_WRITE, enable the channels the song declares it uses.
-    player->music_status = (uint8_t)(music->channel_mask & 0x1F);
     player->music_dpcm_sample_bank = music->dpcm_sample_bank_count == 0 ? -1 : 0;
 
     // Reset reserve state
@@ -436,10 +453,10 @@ void fam_player_resume_music(FamPlayer* player) {
     player->music_paused = false;
 
     // Restore pulse and noise volume, triangle linear counter and halt
-    if (player->sfx[CHAN_ID_PULSE1] == NULL) fam_apu_write_register(player->apu, 0x4000, player->reserve_pulse1[0]);
-    if (player->sfx[CHAN_ID_PULSE2] == NULL) fam_apu_write_register(player->apu, 0x4004, player->reserve_pulse2[0]);
-    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) fam_apu_write_register(player->apu, 0x4008, player->reserve_triangle[0]);
-    if (player->sfx[CHAN_ID_NOISE] == NULL) fam_apu_write_register(player->apu, 0x400C, player->reserve_noise[0]);
+    if (!player_is_sfx_active(player, CHAN_ID_PULSE1)) fam_apu_write_register(player->apu, 0x4000, player->reserve_pulse1[0]);
+    if (!player_is_sfx_active(player, CHAN_ID_PULSE2)) fam_apu_write_register(player->apu, 0x4004, player->reserve_pulse2[0]);
+    if (!player_is_sfx_active(player, CHAN_ID_TRIANGLE)) fam_apu_write_register(player->apu, 0x4008, player->reserve_triangle[0]);
+    if (!player_is_sfx_active(player, CHAN_ID_NOISE)) fam_apu_write_register(player->apu, 0x400C, player->reserve_noise[0]);
 }
 
 void fam_player_stop_music(FamPlayer* player) {
@@ -466,6 +483,7 @@ void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     }
 
     player->sfx[sfx->channel_id] = sfx;
+    player->sfx_enabled[sfx->channel_id] = false;
     player->sfx_pos[sfx->channel_id] = 0;
     player->sfx_skip_counter[sfx->channel_id] = 0;
 

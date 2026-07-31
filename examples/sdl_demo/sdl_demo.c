@@ -40,7 +40,7 @@ static const uint8_t music_data[] = {
     0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Channel mask
     0x02, 0x00, 0x00, 0x00, // Sample bank count
     0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Sample bank offset
-    0x1A, 0x00, 0x00, 0x00, // Stream operation count
+    0x1B, 0x00, 0x00, 0x00, // Stream operation count
     0x2A, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream offset
     0xFF, 0xFF, 0xFF, 0xFF, // Loop point (No loop)
 
@@ -328,8 +328,9 @@ static const uint8_t music_data[] = {
     0x5a, 0xa9, 0x02, 0x82, 0xa4, 0xac, 0xd4, 0xda, 0xee, 0x7b, 0x6d, 0x49,
     0x49,
 
-    // Records (52 bytes)
+    // Records (54 bytes)
     // Frame 0: channel setup + C4
+    0x15, 0x0F,  // Enable all channels except DMC
     0x00, 0xB8,  // $4000 PULSE1_DUTY = 0xB8 (50% duty, loop, const vol 8)
     0x01, 0x00,  // $4001 PULSE1_SWEEP = 0x00 (sweep off)
     0x08, 0xFF,  // $4008 TRI_COUNTER = 0xFF (loop, max linear)
@@ -358,11 +359,11 @@ static const uint8_t music_data[] = {
     0x03, 0x00, // Silence pulse 1
 
     // Play sample at the end
-    0x15, 0x01, // Switch to bank 1
+    0x14, 0x01, // Switch to bank 1
     0x12, 0x00,
     0x13, 0xCF,
     0x10, 0x0F,
-    0x14, 0x00,
+    0x15, 0xFF,
     0xFE, 0x31, // ENDFRAME, skip 49
     0xFF, 0x00, // ENDSTREAM
 };
@@ -375,11 +376,12 @@ static const uint8_t sfx_pulse1_data[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Channel ID
     0x00, 0x00, 0x00, 0x00, // Unused
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Unused
-    0x0C, 0x00, 0x00, 0x00, // Stream operation count
+    0x0D, 0x00, 0x00, 0x00, // Stream operation count
     0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream offset
     0x00, 0x00, 0x00, 0x00, // Unused
 
     // --- FRAME 1 ---
+    0x15, 0xFF,
     0x0, 0x8C, // 1000 1100 -> 50% duty, constant volume, volume 12
     0x2, 0x7E, // Low 8 bits of timer for A-5 (Timer: 0x17E)
     0x3, 0x01, // High 3 bits of timer (0x01) + length counter load
@@ -408,11 +410,12 @@ static const uint8_t sfx_triangle_data[] = {
     0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Channel ID
     0x00, 0x00, 0x00, 0x00, // Unused
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Unused
-    0x0F, 0x00, 0x00, 0x00, // Stream operation count
+    0x10, 0x00, 0x00, 0x00, // Stream operation count
     0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Stream offset
     0x00, 0x00, 0x00, 0x00, // Unused
 
     // --- FRAME 1 ---
+    0x15, 0xFF,
     0x8, 0x81, // Control flag set (no halt), linear counter = 1
     0xA, 0x40, // Low 8 bits of timer (Timer: 0x040)
     0xB, 0x00, // High 3 bits of timer
@@ -531,11 +534,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\superfusion.vgm");
-    if (err != FAM_SUCCESS) {
-        printf("Loading vgm failed with error code %d\n", err);
-        return 1;
-    }
+    // err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\superfusion.vgm");
+    // if (err != FAM_SUCCESS) {
+    //     printf("Loading vgm failed with error code %d\n", err);
+    //     return 1;
+    // }
 
     FamSfx* sfx_pulse1;
     err = fam_sfx_from_buffer(&sfx_pulse1, sizeof(sfx_pulse1_data), sfx_pulse1_data);
@@ -583,25 +586,26 @@ int main(int argc, char **argv) {
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
 
-    // SDL_Delay(1000);
+    SDL_Delay(1000);
 
-    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
-    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
 
-    // SDL_Delay(250);
+    SDL_Delay(250);
 
-    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    // SDL_Delay(500);
+    SDL_Delay(500);
 
-    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
 
-    // SDL_Delay(1000);
+    SDL_Delay(1000);
 
-    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
-    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
+    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(50000);
+    SDL_Delay(2000);
+    // SDL_Delay(50000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
