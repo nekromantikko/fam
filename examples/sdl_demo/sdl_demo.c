@@ -534,11 +534,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\superfusion.vgm");
-    // if (err != FAM_SUCCESS) {
-    //     printf("Loading vgm failed with error code %d\n", err);
-    //     return 1;
-    // }
+    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\superfusion.vgm");
+    if (err != FAM_SUCCESS) {
+        printf("Loading vgm failed with error code %d\n", err);
+        return 1;
+    }
 
     FamSfx* sfx_pulse1;
     err = fam_sfx_from_buffer(&sfx_pulse1, sizeof(sfx_pulse1_data), sfx_pulse1_data);
@@ -586,26 +586,26 @@ int main(int argc, char **argv) {
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
 
-    SDL_Delay(1000);
+    // SDL_Delay(1000);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
 
-    SDL_Delay(250);
+    // SDL_Delay(250);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(500);
+    // SDL_Delay(500);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
 
-    SDL_Delay(1000);
+    // SDL_Delay(1000);
 
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(2000);
-    // SDL_Delay(50000);
+    // SDL_Delay(2000);
+    SDL_Delay(50000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
