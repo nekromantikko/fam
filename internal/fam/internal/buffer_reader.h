@@ -77,3 +77,7 @@ static inline size_t buffer_reader_size(const BufferReader* reader) {
 static inline size_t buffer_reader_remaining(const BufferReader* reader) {
     return (size_t)(reader->end - reader->pos);
 }
+
+static inline size_t buffer_reader_tell(const BufferReader* reader) {
+    return (size_t)(reader->pos - reader->start);
+}

@@ -583,25 +583,25 @@ int main(int argc, char **argv) {
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
 
-    SDL_Delay(1000);
+    // SDL_Delay(1000);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PAUSE, NULL);
 
-    SDL_Delay(250);
+    // SDL_Delay(250);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(500);
+    // SDL_Delay(500);
 
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_triangle);
 
-    SDL_Delay(1000);
+    // SDL_Delay(1000);
 
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
-    cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
+    // cmd_buffer_push(&cmd_buffer, CMD_MUSIC_RESUME, NULL);
+    // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
-    SDL_Delay(2000);
+    SDL_Delay(50000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
