@@ -534,7 +534,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\cheetahmen.vgm");
+    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\future.vgm");
     if (err != FAM_SUCCESS) {
         printf("Loading vgm failed with error code %d\n", err);
         return 1;
@@ -605,7 +605,7 @@ int main(int argc, char **argv) {
     // cmd_buffer_push(&cmd_buffer, CMD_SFX_PLAY, sfx_pulse1);
 
     // SDL_Delay(2000);
-    SDL_Delay(50000);
+    SDL_Delay(200000);
 
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
