@@ -1,7 +1,6 @@
 #include <fam/vgm.h>
 #include <fam/internal/stream_types.h>
 #include <fam/internal/buffer_reader.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -104,9 +103,6 @@ static FamResult parse_header(BufferReader* reader, VgmHeader* out) {
         (out->nes_clock & 0x7FFFFFFF) == 0) {
         return FAM_ERROR_INVALID_FORMAT;
     }
-
-    printf("VGM v%x, data @ 0x%x, loop @ 0x%x, NES clock %u\n",
-        out->version, out->data_offset, out->loop_offset, out->nes_clock & 0x7FFFFFFF);
 
     return FAM_SUCCESS;
 }
@@ -375,9 +371,6 @@ FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, co
         bank_data_total += conv.banks[i].max_extent;
     }
 
-    printf("VGM: %u stream ops, loop point %u, channel mask %llu, %u banks, %zu DPCM bytes\n",
-        op_count, conv.loop_point, (unsigned long long)conv.channel_mask, bank_count, bank_data_total);
-
     // Single contiguous block: struct + bank array + bank data + stream (mirrors io.c).
     // NOTE: sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank); holds while it is a
     // multiple of 8. Bank data and the stream are byte-aligned, so they can follow freely.
@@ -426,43 +419,4 @@ FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, co
 
     *out_music = music;
     return FAM_SUCCESS;
-}
-
-FamResult fam_music_from_vgm_file(FamMusic** out_music, const char* fname) {
-    if (out_music == NULL) {
-        return FAM_ERROR_INVALID_ARGUMENT;
-    }
-
-    FILE* file = fopen(fname, "rb");
-    if (file == NULL) {
-        return FAM_ERROR_IO;
-    }
-
-    fseek(file, 0, SEEK_END);
-    long file_length = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    if (file_length < 0) {
-        fclose(file);
-        return FAM_ERROR_IO;
-    }
-
-    uint8_t* buffer = (uint8_t*)malloc((size_t)file_length);
-    if (buffer == NULL) {
-        fclose(file);
-        return FAM_ERROR_OUT_OF_MEMORY;
-    }
-
-    size_t read_len = fread(buffer, 1, (size_t)file_length, file);
-    fclose(file);
-
-    if (read_len != (size_t)file_length) {
-        free(buffer);
-        return FAM_ERROR_IO;
-    }
-
-    FamResult result = fam_music_from_vgm_buffer(out_music, (size_t)file_length, buffer);
-    free(buffer);
-
-    return result;
 }

@@ -1,7 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <SDL3/SDL.h>
 #include <fam/fam.h>
+#include <fam/vgm.h>
 
 #define SAMPLE_RATE 44100
 #define CMD_BUFFER_CAPACITY 256 // NOTE: Must be power of 2!
@@ -512,6 +514,43 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
     }
 }
 
+// Getting asset bytes into memory is the application's job, not fam's: a real game might pull these
+// out of a pak file or a streaming asset system rather than off disk. Demo-grade — ftell tops out
+// at 2 GB on Windows, which no .vgm is ever going to approach.
+static bool read_entire_file(const char* path, size_t* out_size, uint8_t** out_data) {
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        return false;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (length < 0) {
+        fclose(file);
+        return false;
+    }
+
+    uint8_t* data = (uint8_t*)malloc((size_t)length);
+    if (data == NULL) {
+        fclose(file);
+        return false;
+    }
+
+    size_t read_len = fread(data, 1, (size_t)length, file);
+    fclose(file);
+
+    if (read_len != (size_t)length) {
+        free(data);
+        return false;
+    }
+
+    *out_size = (size_t)length;
+    *out_data = data;
+    return true;
+}
+
 int main(int argc, char **argv) {
     FamApu* apu;
     FamResult err = fam_apu_init(&apu);
@@ -527,17 +566,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // With no argument we play the .fam song embedded above; pass a .vgm path to convert and play
+    // that one instead. No .vgm ships in this repo.
     FamMusic* music;
-    err = fam_music_from_buffer(&music, sizeof(music_data), music_data);
-    if (err != FAM_SUCCESS) {
-        printf("Loading music failed with error code %d\n", err);
-        return 1;
-    }
+    if (argc > 1) {
+        size_t vgm_size;
+        uint8_t* vgm_data;
+        if (!read_entire_file(argv[1], &vgm_size, &vgm_data)) {
+            printf("Could not read '%s'\n", argv[1]);
+            return 1;
+        }
 
-    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\cheetahmen.vgm");
-    if (err != FAM_SUCCESS) {
-        printf("Loading vgm failed with error code %d\n", err);
-        return 1;
+        err = fam_music_from_vgm_buffer(&music, vgm_size, vgm_data);
+        free(vgm_data); // the converter copies out everything it keeps
+        if (err != FAM_SUCCESS) {
+            printf("Converting '%s' failed with error code %d\n", argv[1], err);
+            return 1;
+        }
+    } else {
+        err = fam_music_from_buffer(&music, sizeof(music_data), music_data);
+        if (err != FAM_SUCCESS) {
+            printf("Loading music failed with error code %d\n", err);
+            return 1;
+        }
     }
 
     FamSfx* sfx_pulse1;
@@ -582,7 +633,7 @@ int main(int argc, char **argv) {
     }
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing sample song with layered SFX...\n");
+    printf("Playing %s with layered SFX...\n", argc > 1 ? argv[1] : "the embedded sample song");
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
 

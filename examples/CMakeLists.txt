@@ -1,5 +1,10 @@
 include(FetchContent)
 
+# The demo can convert a .vgm passed on the command line, so it needs the converter target.
+if(NOT FAM_BUILD_CONVERTERS)
+    message(FATAL_ERROR "FAM_BUILD_EXAMPLES requires FAM_BUILD_CONVERTERS")
+endif()
+
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 
@@ -11,4 +16,4 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(SDL3)
 
 add_executable(sdl_demo sdl_demo/sdl_demo.c)
-target_link_libraries(sdl_demo PRIVATE SDL3::SDL3-static fam)
+target_link_libraries(sdl_demo PRIVATE SDL3::SDL3-static fam fam_convert)
