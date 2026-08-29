@@ -1,7 +1,6 @@
 #include <fam/vgm.h>
 #include <fam/internal/stream_types.h>
 #include <fam/internal/buffer_reader.h>
-#include <fam/internal/grow_buffer.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,7 +53,8 @@ typedef struct {
 // Single-pass conversion state: emit the op stream while reconstructing the DPCM banks on the
 // fly. Banks are deduped in first-appearance order, so switches can be emitted live.
 typedef struct {
-    GrowBuffer stream;
+    StreamOperation* stream_start;
+    StreamOperation* stream_pos;
     uint64_t channel_mask;
     uint32_t loop_point;
     uint32_t sample_accum;      // VGM samples of wait not yet flushed to frames
@@ -122,28 +122,23 @@ static uint8_t machine_from_nes_clock(uint32_t clock) {
 
 static void converter_free(VgmConverter* c) {
     free(c->window);
-    grow_buffer_free(&c->stream);
+    free(c->stream_start);
     for (uint32_t i = 0; i < c->bank_count; i++) {
         free(c->banks[i].window);
     }
 }
 
-static FamResult converter_emit(VgmConverter* c, uint8_t opcode, uint8_t data) {
-    uint8_t op[2] = { opcode, data };
-    return grow_buffer_write_bytes(&c->stream, op, 2);
+static void converter_emit(VgmConverter* c, uint8_t opcode, uint8_t data) {
+    *c->stream_pos++ = (StreamOperation){ opcode, data };
 }
 
 // A wait of `frames` frames, chunked into OP_ENDFRAMEs (each spans up to OP_ENDFRAME_MAX_SPAN).
-static FamResult converter_emit_wait(VgmConverter* c, uint32_t frames) {
+static void converter_emit_wait(VgmConverter* c, uint32_t frames) {
     while (frames > 0) {
         uint32_t chunk = (frames > OP_ENDFRAME_MAX_SPAN) ? OP_ENDFRAME_MAX_SPAN : frames;
-        FamResult result = converter_emit(c, OP_ENDFRAME, (uint8_t)(chunk - 1));
-        if (result != FAM_SUCCESS) {
-            return result;
-        }
+        converter_emit(c, OP_ENDFRAME, (uint8_t)(chunk - 1));
         frames -= chunk;
     }
-    return FAM_SUCCESS;
 }
 
 // Returns the index of the bank holding the current window, adding one if it's new.
@@ -169,15 +164,15 @@ static int32_t converter_bank_for_window(VgmConverter* c) {
 
 // Walk the VGM command stream once: emit the op stream, quantize waits into whole frames, and
 // reconstruct the DPCM banks (each distinct $C000 window becomes a bank, switched live).
-static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, VgmConverter* c) {
-    buffer_reader_seek(reader, hdr->data_offset);
+static FamResult convert_commands(BufferReader* reader, const VgmHeader* header, VgmConverter* c) {
+    buffer_reader_seek(reader, header->data_offset);
     bool done = false;
 
     while (!done) {
         // The loop target always lands on a command boundary; record which op it maps to.
-        if (hdr->loop_offset != 0 && c->loop_point == MUSIC_NO_LOOP &&
-            buffer_reader_tell(reader) == hdr->loop_offset) {
-            c->loop_point = (uint32_t)(c->stream.size / sizeof(StreamOperation));
+        if (header->loop_offset != 0 && c->loop_point == MUSIC_NO_LOOP &&
+            buffer_reader_tell(reader) == header->loop_offset) {
+            c->loop_point = (uint32_t)(c->stream_pos - c->stream_start);
         }
 
         uint8_t cmd;
@@ -186,7 +181,6 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
             return FAM_ERROR_INVALID_FORMAT;
         }
 
-        FamResult result = FAM_SUCCESS;
         switch (cmd) {
             case VGM_CMD_NES_APU: {
                 uint8_t reg, value;
@@ -195,7 +189,7 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
                 // reg is the offset from $4000, which is exactly our opcode numbering for the
                 // channel register writes: $4000-$4013 -> OP_PULSE1_WRITE0 .. OP_DMC_WRITE3.
                 if (reg <= OP_DMC_WRITE3) {
-                    result = converter_emit(c, reg, value);
+                    converter_emit(c, reg, value);
                     c->channel_mask |= (uint64_t)1 << (reg >> 2);
                     if (reg == 0x12) {
                         c->cur_sample_addr = value;
@@ -217,7 +211,7 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
                             c->used_max = extent;
                         }
                     }
-                    result = converter_emit(c, OP_STATUS_WRITE, value & 0x1F);
+                    converter_emit(c, OP_STATUS_WRITE, value & 0x1F);
                     c->channel_mask |= value & 0x1F;
                 }
                 // $4017 (frame counter) and $4014 (OAM DMA, non-audio) are ignored.
@@ -273,7 +267,7 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
                         return (bank == -1) ? FAM_ERROR_UNSUPPORTED_FEATURE : FAM_ERROR_OUT_OF_MEMORY;
                     }
                     if (bank != c->cur_bank) {
-                        result = converter_emit(c, OP_SWITCH_SAMPLE_BANK, (uint8_t)bank);
+                        converter_emit(c, OP_SWITCH_SAMPLE_BANK, (uint8_t)bank);
                         c->cur_bank = bank;
                     }
                 } else {
@@ -304,9 +298,6 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
                 }
                 break;
         }
-        if (result != FAM_SUCCESS) {
-            return result;
-        }
         if (reader->error) {
             return FAM_ERROR_INVALID_FORMAT;
         }
@@ -315,10 +306,7 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
         if (c->sample_accum >= c->samples_per_frame) {
             uint32_t frames = c->sample_accum / c->samples_per_frame;
             c->sample_accum -= frames * c->samples_per_frame;
-            result = converter_emit_wait(c, frames);
-            if (result != FAM_SUCCESS) {
-                return result;
-            }
+            converter_emit_wait(c, frames);
         }
     }
 
@@ -327,7 +315,8 @@ static FamResult convert_commands(BufferReader* reader, const VgmHeader* hdr, Vg
         c->banks[c->cur_bank].max_extent = c->used_max;
     }
 
-    return converter_emit(c, OP_ENDSTREAM, 0);
+    converter_emit(c, OP_ENDSTREAM, 0);
+    return FAM_SUCCESS;
 }
 
 FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, const uint8_t* buffer) {
@@ -336,13 +325,18 @@ FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, co
     }
 
     BufferReader header_reader = buffer_reader_init(buffer, buffer_size);
-    VgmHeader hdr;
-    FamResult result = parse_header(&header_reader, &hdr);
+    VgmHeader header;
+    FamResult result = parse_header(&header_reader, &header);
     if (result != FAM_SUCCESS) {
         return result;
     }
 
-    uint8_t machine = machine_from_nes_clock(hdr.nes_clock);
+    if (header.data_offset >= buffer_size ||
+        header.loop_offset >= buffer_size) {
+        return FAM_ERROR_INVALID_FORMAT;
+    }
+
+    uint8_t machine = machine_from_nes_clock(header.nes_clock);
 
     VgmConverter conv = {0};
     conv.loop_point = MUSIC_NO_LOOP;
@@ -352,20 +346,29 @@ FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, co
     if (conv.window == NULL) {
         return FAM_ERROR_OUT_OF_MEMORY;
     }
-    result = grow_buffer_init(&conv.stream, 0x1000);
-    if (result != FAM_SUCCESS) {
+
+    // Upper bound on emitted ops: every command consumes at least one input byte and emits at
+    // most one op, so the op count can never exceed the command stream's byte count. The
+    // terminating 0x66 consumes a byte without emitting, which is exactly the slot OP_ENDSTREAM
+    // needs, making the bound tight; the +1 is slack against a future command that emits two ops
+    // for one command. Sized once here so the emit path needs no per-op bounds check.
+    size_t stream_max_ops = (buffer_size - header.data_offset) + 1;
+
+    conv.stream_start = (StreamOperation*)malloc(stream_max_ops * sizeof(StreamOperation));
+    if (conv.stream_start == NULL) {
         converter_free(&conv);
-        return result;
+        return FAM_ERROR_OUT_OF_MEMORY;
     }
+    conv.stream_pos = conv.stream_start;
 
     BufferReader reader = buffer_reader_init(buffer, buffer_size);
-    result = convert_commands(&reader, &hdr, &conv);
+    result = convert_commands(&reader, &header, &conv);
     if (result != FAM_SUCCESS) {
         converter_free(&conv);
         return result;
     }
 
-    const uint32_t op_count = (uint32_t)(conv.stream.size / sizeof(StreamOperation));
+    const uint32_t op_count = (uint32_t)(conv.stream_pos - conv.stream_start);
     const uint32_t bank_count = conv.bank_count;
     size_t bank_data_total = 0;
     for (uint32_t i = 0; i < bank_count; i++) {
@@ -416,7 +419,7 @@ FamResult fam_music_from_vgm_buffer(FamMusic** out_music, size_t buffer_size, co
 
     if (op_count > 0) {
         music->stream = (StreamOperation*)mem_pos;
-        memcpy(mem_pos, conv.stream.data, conv.stream.size);
+        memcpy(mem_pos, conv.stream_start, (size_t)op_count * sizeof(StreamOperation));
     }
 
     converter_free(&conv);

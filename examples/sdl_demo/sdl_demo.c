@@ -534,7 +534,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\future.vgm");
+    err = fam_music_from_vgm_file(&music, "C:\\Users\\jonah\\Downloads\\cheetahmen.vgm");
     if (err != FAM_SUCCESS) {
         printf("Loading vgm failed with error code %d\n", err);
         return 1;
