@@ -20,10 +20,14 @@ struct FamPlayer {
     uint8_t reserve_triangle[4];
     uint8_t reserve_noise[4];
     uint8_t reserve_dmc[4];
+    uint8_t reserve_status;
 
     const FamSfx* sfx[SFX_CHANNEL_COUNT];
+    bool sfx_enabled[SFX_CHANNEL_COUNT]; // Affects APU channel status
     uint32_t sfx_pos[SFX_CHANNEL_COUNT];
     uint8_t sfx_skip_counter[SFX_CHANNEL_COUNT];
+
+    uint8_t last_status_written;
 
     double accumulator;
     double cycle_counter;
@@ -35,6 +39,7 @@ static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_triangle, 0, 4);
     memset(player->reserve_noise, 0, 4);
     memset(player->reserve_dmc, 0, 4);
+    player->reserve_status = 0;
 }
 
 // NOTE: This will retrigger notes by loading the length counters! Use only if necessary (Like after a sound effect stops)
@@ -76,20 +81,35 @@ static void player_restore_reserve(FamPlayer* player, int channel) {
     }
 }
 
-static void player_update_status_register(FamPlayer* player) {
+static void player_update_status_register(FamPlayer* player, bool force) {
     uint8_t status = 0;
 
     if (player->music != NULL) {
-        status |= player->music->channel_mask & 0x1F;
+        status |= player->reserve_status;
     }
 
+    // A present SFX owns its channel outright: its enable bit overrides the music's, so a
+    // self-silenced SFX quiets the whole channel instead of letting the music bleed through.
     for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
         if (player->sfx[i] != NULL) {
-            status |= 1 << i;
+            status &= ~(1 << i);
+            if (player->sfx_enabled[i]) {
+                status |= 1 << i;
+            }
         }
     }
 
-    fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, status);
+    // Re-asserting CHAN_BIT_DMC restarts a finished sample, so unless an explicit
+    // OP_STATUS_WRITE forces it, leave bit 4 at whatever the DMC is actually doing.
+    uint8_t status_read;
+    fam_apu_read_register(player->apu, FAM_REGISTER_STATUS, &status_read);
+    uint8_t to_write = force ? status
+                             : (status & ~CHAN_BIT_DMC) | (status_read & CHAN_BIT_DMC);
+
+    if (force || to_write != player->last_status_written) {
+        fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, to_write);
+        player->last_status_written = to_write;
+    }
 }
 
 static void player_silence_music(FamPlayer* player) {
@@ -130,6 +150,8 @@ static void player_process_music(FamPlayer* player) {
         player->music_skip_counter--;
         return;
     }
+
+loop:
 
     while (player->music_pos < player->music->stream_op_count) {
         StreamOperation op = player->music->stream[player->music_pos++];
@@ -193,8 +215,9 @@ static void player_process_music(FamPlayer* player) {
                     fam_apu_write_register(player->apu, 0x4010 + offset, op.data);
                     break;
                 }
-            case OP_DMC_PLAY_SAMPLE:
-                player_update_status_register(player);
+            case OP_STATUS_WRITE:
+                player->reserve_status = (uint8_t)(op.data & (player->music->channel_mask & 0x1F));
+                player_update_status_register(player, true);
                 break;
             case OP_SWITCH_SAMPLE_BANK:
                 player->music_dpcm_sample_bank = (int8_t)op.data;
@@ -218,6 +241,7 @@ endstream:
         fam_player_stop_music(player);
     } else {
         player->music_pos = player->music->loop_point;
+        goto loop;
     }
 }
 
@@ -283,7 +307,11 @@ static void player_process_sfx(FamPlayer* player, int channel) {
             case OP_DMC_WRITE1:
             case OP_DMC_WRITE2:
             case OP_DMC_WRITE3:
-            case OP_DMC_PLAY_SAMPLE:
+            case OP_SWITCH_SAMPLE_BANK:
+                break;
+            case OP_STATUS_WRITE:
+                player->sfx_enabled[channel] = (op.data >> channel) & 1;
+                player_update_status_register(player, false);
                 break;
 
             case OP_ENDFRAME:
@@ -301,7 +329,8 @@ static void player_process_sfx(FamPlayer* player, int channel) {
 endstream:
 
     player->sfx[channel] = NULL;
-    player_update_status_register(player);
+    player->sfx_enabled[channel] = false;
+    player_update_status_register(player, false);
     player_restore_reserve(player, channel);
 
     // Re-mute paused music after reserve restore
@@ -394,7 +423,7 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     // Reset reserve state
     player_clear_reserve(player);
 
-    player_update_status_register(player);
+    player_update_status_register(player, true);
 }
 
 void fam_player_pause_music(FamPlayer* player) {
@@ -439,7 +468,7 @@ void fam_player_stop_music(FamPlayer* player) {
 
     player->music = NULL;
 
-    player_update_status_register(player);
+    player_update_status_register(player, false);
 }
 
 void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
@@ -452,8 +481,9 @@ void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     }
 
     player->sfx[sfx->channel_id] = sfx;
+    player->sfx_enabled[sfx->channel_id] = false;
     player->sfx_pos[sfx->channel_id] = 0;
     player->sfx_skip_counter[sfx->channel_id] = 0;
 
-    player_update_status_register(player);
+    player_update_status_register(player, false);
 }
