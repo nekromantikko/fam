@@ -12,9 +12,24 @@
 typedef enum {
     FAM_USAGE_MUSIC = 0,
     FAM_USAGE_SFX,
+
+    FAM_USAGE_COUNT
 } FamUsage;
 
-static FamResult validate_header(BufferReader* reader, FamUsage expected_usage) {
+typedef struct {
+    uint32_t version_major;
+    uint32_t version_minor;
+    uint8_t usage;
+    uint64_t channel_id_mask; // Depending on usage, a bitmask for music or channel ID for sfx
+    uint32_t music_dpcm_bank_count;
+    uint64_t music_dpcm_bank_offset; // Absolute
+    uint32_t stream_length; // Length in operations
+    uint64_t stream_offset; // Absolute
+    uint32_t music_loop_point;
+    uint8_t machine;
+} FamHeader;
+
+static FamResult parse_header(BufferReader* reader, FamHeader* out) {
     uint32_t magic;
     buffer_reader_read(reader, &magic, sizeof(uint32_t));
     if (reader->error ||
@@ -22,19 +37,72 @@ static FamResult validate_header(BufferReader* reader, FamUsage expected_usage) 
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    uint32_t version_major, version_minor;
-    buffer_reader_read(reader, &version_major, sizeof(uint32_t));
-    buffer_reader_read(reader, &version_minor, sizeof(uint32_t));
+    buffer_reader_read(reader, &out->version_major, sizeof(uint32_t));
+    buffer_reader_read(reader, &out->version_minor, sizeof(uint32_t));
     if (reader->error ||
-        version_major != FAM_VERSION_MAJOR ||
-        version_minor > FAM_VERSION_MINOR) {
+        out->version_major != FAM_VERSION_MAJOR ||
+        out->version_minor > FAM_VERSION_MINOR) {
+        return FAM_ERROR_UNSUPPORTED_VERSION;
+    }
+
+    buffer_reader_read(reader, &out->usage, sizeof(uint8_t));
+    if (reader->error ||
+        out->usage >= FAM_USAGE_COUNT) {
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    uint8_t usage;
-    buffer_reader_read(reader, &usage, sizeof(uint8_t));
+    buffer_reader_read(reader, &out->channel_id_mask, sizeof(uint64_t));
     if (reader->error ||
-        usage != expected_usage) {
+        (out->usage == FAM_USAGE_SFX && 
+        out->channel_id_mask >= SFX_CHANNEL_COUNT)) {
+        return FAM_ERROR_INVALID_FORMAT;
+    }
+
+    if (out->usage == FAM_USAGE_MUSIC) {
+        buffer_reader_read(reader, &out->music_dpcm_bank_count, sizeof(uint32_t));
+        if (reader->error || 
+            out->music_dpcm_bank_count > MAX_DPCM_BANK_COUNT || 
+            out->music_dpcm_bank_count > SIZE_MAX / sizeof(DPCMSampleBank)) {
+            return FAM_ERROR_INVALID_FORMAT;
+        }
+
+        buffer_reader_read(reader, &out->music_dpcm_bank_offset, sizeof(uint64_t));
+        if (reader->error || 
+            out->music_dpcm_bank_offset >= buffer_reader_size(reader)) {
+            return FAM_ERROR_INVALID_FORMAT;
+        }
+    } else {
+        buffer_reader_skip(reader, sizeof(uint32_t) + sizeof(uint64_t));
+        out->music_dpcm_bank_count = 0;
+        out->music_dpcm_bank_offset = 0;
+    }
+
+    buffer_reader_read(reader, &out->stream_length, sizeof(uint32_t));
+    if (reader->error || 
+        out->stream_length > MAX_STREAM_LENGTH || 
+        out->stream_length > SIZE_MAX / sizeof(StreamOperation)) {
+        return FAM_ERROR_INVALID_FORMAT;
+    }
+
+    buffer_reader_read(reader, &out->stream_offset, sizeof(uint64_t));
+    if (reader->error || 
+        out->stream_offset >= buffer_reader_size(reader)) {
+        return FAM_ERROR_INVALID_FORMAT;
+    }
+
+    if (out->usage == FAM_USAGE_MUSIC) {
+        buffer_reader_read(reader, &out->music_loop_point, sizeof(uint32_t));
+        if (reader->error ||
+            (out->music_loop_point != MUSIC_NO_LOOP && out->music_loop_point >= out->stream_length)) {
+            return FAM_ERROR_INVALID_FORMAT;
+        }
+    } else {
+        buffer_reader_skip(reader, sizeof(uint32_t));
+        out->music_loop_point = MUSIC_NO_LOOP;
+    }
+
+    buffer_reader_read(reader, &out->machine, sizeof(uint8_t));
+    if (reader->error || out->machine > FAM_MACHINE_PAL) {
         return FAM_ERROR_INVALID_FORMAT;
     }
 
@@ -49,59 +117,24 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
 
     BufferReader reader = buffer_reader_init(buffer, buffer_size);
 
-    FamResult header_result = validate_header(&reader, FAM_USAGE_MUSIC);
+    FamHeader header;
+    FamResult header_result = parse_header(&reader, &header);
     if (header_result != FAM_SUCCESS) {
         return header_result;
     }
 
-    uint64_t channel_mask;
-    buffer_reader_read(&reader, &channel_mask, sizeof(uint64_t));
-
-    uint32_t bank_count;
-    buffer_reader_read(&reader, &bank_count, sizeof(uint32_t));
-    if (reader.error || 
-        bank_count > MAX_DPCM_BANK_COUNT || 
-        bank_count > SIZE_MAX / sizeof(DPCMSampleBank)) {
-        return FAM_ERROR_INVALID_FORMAT;
-    }
-
-    uint64_t bank_offset;
-    buffer_reader_read(&reader, &bank_offset, sizeof(uint64_t));
-    if (reader.error || 
-        bank_offset >= buffer_reader_size(&reader)) {
-        return FAM_ERROR_INVALID_FORMAT;
-    }
-
-    uint32_t op_count;
-    buffer_reader_read(&reader, &op_count, sizeof(uint32_t));
-    if (reader.error || 
-        op_count > MAX_STREAM_LENGTH || 
-        op_count > SIZE_MAX / sizeof(StreamOperation)) {
-        return FAM_ERROR_INVALID_FORMAT;
-    }
-
-    uint64_t stream_offset;
-    buffer_reader_read(&reader, &stream_offset, sizeof(uint64_t));
-    if (reader.error || 
-        stream_offset >= buffer_reader_size(&reader)) {
-        return FAM_ERROR_INVALID_FORMAT;
-    }
-
-    uint32_t loop_point;
-    buffer_reader_read(&reader, &loop_point, sizeof(uint32_t));
-    if (reader.error ||
-        (loop_point != MUSIC_NO_LOOP && loop_point >= op_count)) {
+    if (header.usage != FAM_USAGE_MUSIC) {
         return FAM_ERROR_INVALID_FORMAT;
     }
 
     // Determine required memory size
     // NOTE: sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank)!
     // As long as sizeof(FamMusic) is a multiple of 8, this holds
-    size_t memory_size = sizeof(FamMusic) + bank_count * sizeof(DPCMSampleBank) + op_count * sizeof(StreamOperation);
+    size_t memory_size = sizeof(FamMusic) + header.music_dpcm_bank_count * sizeof(DPCMSampleBank) + header.stream_length * sizeof(StreamOperation);
 
-    if (bank_count > 0) {
-        buffer_reader_seek(&reader, bank_offset);
-        for (size_t i = 0; i < bank_count && !reader.error; i++) {
+    if (header.music_dpcm_bank_count > 0) {
+        buffer_reader_seek(&reader, header.music_dpcm_bank_offset);
+        for (size_t i = 0; i < header.music_dpcm_bank_count && !reader.error; i++) {
             uint32_t bank_size;
             buffer_reader_read(&reader, &bank_size, sizeof(uint32_t));
             if (reader.error || 
@@ -125,22 +158,23 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     }
 
     FamMusic* music = (FamMusic*)memory;
-    music->channel_mask = channel_mask;
-    music->dpcm_sample_bank_count = bank_count;
+    music->channel_mask = header.channel_id_mask;
+    music->dpcm_sample_bank_count = header.music_dpcm_bank_count;
     music->dpcm_sample_banks = NULL;
-    music->stream_op_count = op_count;
+    music->stream_op_count = header.stream_length;
     music->stream = NULL;
-    music->loop_point = loop_point;
+    music->loop_point = header.music_loop_point;
+    music->machine = header.machine;
 
     uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamMusic);
 
     // Read DPCM sample banks
-    if (bank_count > 0) {
+    if (header.music_dpcm_bank_count > 0) {
         music->dpcm_sample_banks = (DPCMSampleBank*)mem_pos;
-        mem_pos += sizeof(DPCMSampleBank) * bank_count;
+        mem_pos += sizeof(DPCMSampleBank) * header.music_dpcm_bank_count;
 
-        buffer_reader_seek(&reader, bank_offset);
-        for (size_t i = 0; i < bank_count && !reader.error; i++) {
+        buffer_reader_seek(&reader, header.music_dpcm_bank_offset);
+        for (size_t i = 0; i < header.music_dpcm_bank_count && !reader.error; i++) {
             DPCMSampleBank* bank = &music->dpcm_sample_banks[i];
             buffer_reader_read(&reader, &bank->size, sizeof(uint32_t));
             
@@ -155,11 +189,11 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     }
 
     // Read stream ops
-    if (op_count > 0) {
+    if (header.stream_length > 0) {
         music->stream = (StreamOperation*)mem_pos;
     
-        buffer_reader_seek(&reader, stream_offset);
-        for (size_t i = 0; i < op_count && !reader.error; i++) {
+        buffer_reader_seek(&reader, header.stream_offset);
+        for (size_t i = 0; i < header.stream_length && !reader.error; i++) {
             StreamOperation op = {0};
             buffer_reader_read(&reader, &op.opcode, 1);
             buffer_reader_read(&reader, &op.data, 1);
@@ -192,36 +226,17 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
 
     BufferReader reader = buffer_reader_init(buffer, buffer_size);
 
-    FamResult header_result = validate_header(&reader, FAM_USAGE_SFX);
+    FamHeader header;
+    FamResult header_result = parse_header(&reader, &header);
     if (header_result != FAM_SUCCESS) {
         return header_result;
     }
 
-    uint64_t channel_id;
-    buffer_reader_read(&reader, &channel_id, sizeof(uint64_t));
-    if (reader.error ||
-        channel_id >= SFX_CHANNEL_COUNT) {
+    if (header.usage != FAM_USAGE_SFX) {
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    buffer_reader_skip(&reader, sizeof(uint32_t) + sizeof(uint64_t)); // Skip over music-only sample stuff
-
-    uint32_t op_count;
-    buffer_reader_read(&reader, &op_count, sizeof(uint32_t));
-    if (reader.error || 
-        op_count > MAX_STREAM_LENGTH || 
-        op_count > SIZE_MAX / sizeof(StreamOperation)) {
-        return FAM_ERROR_INVALID_FORMAT;
-    }
-
-    uint64_t stream_offset;
-    buffer_reader_read(&reader, &stream_offset, sizeof(uint64_t));
-    if (reader.error || 
-        stream_offset >= buffer_reader_size(&reader)) {
-        return FAM_ERROR_INVALID_FORMAT;
-    }
-
-    size_t memory_size = sizeof(FamSfx) + op_count * sizeof(StreamOperation);
+    size_t memory_size = sizeof(FamSfx) + header.stream_length * sizeof(StreamOperation);
 
     void* memory = malloc(memory_size);
     if (memory == NULL) {
@@ -229,18 +244,18 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
     }
 
     FamSfx* sfx = (FamSfx*)memory;
-    sfx->channel_id = (uint8_t)channel_id;
-    sfx->stream_op_count = op_count;
+    sfx->channel_id = (uint8_t)header.channel_id_mask;
+    sfx->stream_op_count = header.stream_length;
     sfx->stream = NULL;
 
     uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamSfx);
 
     // Read stream ops
-    if (op_count > 0) {
+    if (header.stream_length > 0) {
         sfx->stream = (StreamOperation*)((uint8_t*)memory + sizeof(FamSfx));
     
-        buffer_reader_seek(&reader, stream_offset);
-        for (size_t i = 0; i < op_count && !reader.error; i++) {
+        buffer_reader_seek(&reader, header.stream_offset);
+        for (size_t i = 0; i < header.stream_length && !reader.error; i++) {
             StreamOperation op = {0};
             buffer_reader_read(&reader, &op.opcode, 1);
             buffer_reader_read(&reader, &op.data, 1);

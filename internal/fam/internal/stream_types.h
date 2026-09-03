@@ -50,8 +50,8 @@ typedef enum {
     OP_DMC_WRITE2           = 0x12,
     OP_DMC_WRITE3           = 0x13,
 
-    OP_DMC_PLAY_SAMPLE      = 0x14,
-    OP_SWITCH_SAMPLE_BANK   = 0x15,
+    OP_SWITCH_SAMPLE_BANK   = 0x14,
+    OP_STATUS_WRITE         = 0x15,
 
     OP_ENDFRAME             = 0xFE,
     OP_ENDSTREAM            = 0xFF,
@@ -67,6 +67,11 @@ typedef struct DPCMSampleBank {
     uint8_t* data;
 } DPCMSampleBank;
 
+typedef enum {
+    FAM_MACHINE_NTSC = 0,
+    FAM_MACHINE_PAL  = 1,
+} FamMachine;
+
 struct FamMusic {
     uint64_t channel_mask;
     uint32_t dpcm_sample_bank_count;
@@ -74,10 +79,12 @@ struct FamMusic {
     DPCMSampleBank* dpcm_sample_banks;
     StreamOperation* stream;
     uint32_t loop_point;
+    uint8_t machine;
 };
 
 struct FamSfx {
     uint8_t channel_id;
+    uint8_t machine;
     uint32_t stream_op_count;
     StreamOperation* stream;
 };
