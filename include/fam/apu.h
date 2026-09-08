@@ -36,8 +36,9 @@ typedef enum {
     FAM_REGISTER_FRAME_COUNTER      = 0x4017
 } FamRegister;
 
-FamResult fam_apu_init(FamApu** out_apu);
+FamResult fam_apu_init(FamApu** out_apu, uint8_t machine);
 void fam_apu_free(FamApu* apu);
+uint8_t fam_apu_get_machine(const FamApu* apu);
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
 void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);

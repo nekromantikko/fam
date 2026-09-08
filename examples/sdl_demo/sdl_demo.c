@@ -143,8 +143,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    size_t file_size;
+    uint8_t* file_data;
+    if (!read_entire_file(argv[1], &file_size, &file_data)) {
+        printf("Could not read '%s'\n", argv[1]);
+        return 1;
+    }
+
+    FamMusic* music;
+    FamResult err = fam_music_from_buffer(&music, file_size, file_data);
+    free(file_data);
+    if (err != FAM_SUCCESS) {
+        printf("Loading '%s' failed with error code %d\n", argv[1], err);
+        return 1;
+    }
+
+    // The APU has to match the machine the song was made for, otherwise the player refuses to play it
     FamApu* apu;
-    FamResult err = fam_apu_init(&apu);
+    err = fam_apu_init(&apu, fam_music_get_machine(music));
     if (err != FAM_SUCCESS) {
         printf("Initializing APU failed with error code %d\n", err);
         return 1;
@@ -154,21 +170,6 @@ int main(int argc, char **argv) {
     err = fam_player_init(&player, apu, SAMPLE_RATE);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
-        return 1;
-    }
-
-    size_t file_size;
-    uint8_t* file_data;
-    if (!read_entire_file(argv[1], &file_size, &file_data)) {
-        printf("Could not read '%s'\n", argv[1]);
-        return 1;
-    }
-
-    FamMusic* music;
-    err = fam_music_from_buffer(&music, file_size, file_data);
-    free(file_data);
-    if (err != FAM_SUCCESS) {
-        printf("Loading '%s' failed with error code %d\n", argv[1], err);
         return 1;
     }
 
@@ -200,7 +201,8 @@ int main(int argc, char **argv) {
     }
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing %s...\n", argv[1]);
+    printf("Playing %s (%s)...\n", argv[1],
+        fam_music_get_machine(music) == FAM_MACHINE_PAL ? "PAL" : "NTSC");
     printf("Press Enter to quit.\n");
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);

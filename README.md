@@ -49,7 +49,7 @@ The library currently assumes a **little-endian** architecture. Big-endian archi
 
 ### APU
 
-- [ ] PAL support
+- [x] PAL support
 
 ### Audio Player
 

@@ -1,4 +1,6 @@
 #pragma once
+#include <fam/common.h>
+#include <stdint.h>
 
 #define MUSIC_NO_LOOP UINT32_MAX
 #define SFX_CHANNEL_COUNT 4
@@ -66,11 +68,6 @@ typedef struct DPCMSampleBank {
     uint32_t size;
     uint8_t* data;
 } DPCMSampleBank;
-
-typedef enum {
-    FAM_MACHINE_NTSC = 0,
-    FAM_MACHINE_PAL  = 1,
-} FamMachine;
 
 struct FamMusic {
     uint64_t channel_mask;

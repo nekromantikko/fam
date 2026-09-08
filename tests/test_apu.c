@@ -454,8 +454,70 @@ void test_dmc(void) {
     // This is more precise timing stuff
 }
 
+// NOTE: The frame sequencer steps at different APU cycles on PAL, so the length counter of a
+// channel loaded with the value 2 is clocked down to 0 after 14915 APU cycles on NTSC (half
+// frame at 7457, frame at 14915) but only after 16627 cycles on PAL (8314 and 16627)
+#define NTSC_FRAME_CLOCK 14915
+#define PAL_FRAME_CLOCK 16627
+
+static void clock_apu_cycles(FamApu* target, int apu_cycles) {
+    for (int i = 0; i < apu_cycles; i++) {
+        fam_apu_clock(target);
+    }
+}
+
+static void test_pal(void) {
+    uint8_t status;
+    FamApu* pal_apu;
+
+    // Test 1: Machines other than NTSC and PAL should be rejected
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&pal_apu, 2),
+        "Test 1: initializing an APU with an unknown machine should fail");
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_init(&pal_apu, FAM_MACHINE_PAL),
+        "Test 1: initializing a PAL APU should succeed");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FAM_MACHINE_PAL, fam_apu_get_machine(pal_apu),
+        "Test 1: a PAL APU should report itself as PAL");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FAM_MACHINE_NTSC, fam_apu_get_machine(apu),
+        "Test 1: an NTSC APU should report itself as NTSC");
+
+    // Test 2: A PAL APU runs at the PAL CPU clock rate (in APU cycles, so half of it) and fits
+    // more cycles into a frame, since PAL refreshes at ~50 Hz instead of ~60 Hz
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(831303.5f, (float)fam_apu_get_freq(pal_apu),
+        "Test 2: PAL APU frequency should be 1662607 / 2");
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(16623.75f, (float)fam_apu_get_frame_cycles(pal_apu),
+        "Test 2: PAL APU cycles per frame should be 33247.5 / 2");
+
+    // Test 3: The frame sequencer should step at the PAL rate, so a length counter loaded with
+    // the value 2 should still be playing after an NTSC frame's worth of cycles...
+    fam_apu_write_register(pal_apu, 0x4015, 0x01); // Enable pulse 1
+    fam_apu_write_register(pal_apu, 0x4017, 0x40); // 4-step sequence, disable IRQ, resets the counter
+    fam_apu_write_register(pal_apu, 0x4003, 0x18); // Load length counter with value 2
+    clock_apu_cycles(pal_apu, NTSC_FRAME_CLOCK);
+    fam_apu_read_register(pal_apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, status & 0x01,
+        "Test 3: on PAL the length counter should still be running after an NTSC frame");
+
+    // ...and stop only once the PAL frame is complete
+    clock_apu_cycles(pal_apu, PAL_FRAME_CLOCK - NTSC_FRAME_CLOCK);
+    fam_apu_read_register(pal_apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x01,
+        "Test 3: on PAL the length counter should expire after a PAL frame");
+
+    // Test 4: The same sequence on an NTSC APU should expire a frame earlier
+    fam_apu_write_register(apu, 0x4015, 0x01);
+    fam_apu_write_register(apu, 0x4017, 0x40);
+    fam_apu_write_register(apu, 0x4003, 0x18);
+    clock_apu_cycles(apu, NTSC_FRAME_CLOCK);
+    fam_apu_read_register(apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x01,
+        "Test 4: on NTSC the length counter should expire after an NTSC frame");
+
+    fam_apu_free(pal_apu);
+}
+
 void setUp(void) {
-    fam_apu_init(&apu);
+    fam_apu_init(&apu, FAM_MACHINE_NTSC);
 }
 
 void tearDown(void) {
@@ -474,5 +536,6 @@ int main(void) {
     RUN_TEST(test_length_table_noise);
     RUN_TEST(test_frame_counter_irq);
     RUN_TEST(test_dmc);
+    RUN_TEST(test_pal);
     return UNITY_END();
 }

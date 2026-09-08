@@ -1,4 +1,4 @@
-#include <fam/io.h>
+#include <fam/stream.h>
 #include <fam/internal/stream_types.h>
 #include <fam/internal/buffer_reader.h>
 #include <stdlib.h>
@@ -218,6 +218,10 @@ void fam_music_free(FamMusic* music) {
     free(music);
 }
 
+uint8_t fam_music_get_machine(const FamMusic* music) {
+    return music->machine;
+}
+
 FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_t* buffer) {
     // TODO: An allocation-free version?
     if (out_sfx == NULL || buffer == NULL) {
@@ -278,4 +282,8 @@ void fam_sfx_free(FamSfx* sfx) {
     }
 
     free(sfx);
+}
+
+uint8_t fam_sfx_get_machine(const FamSfx* sfx) {
+    return sfx->machine;
 }

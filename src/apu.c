@@ -1,16 +1,28 @@
 #include <fam/apu.h>
 #include <stdlib.h>
 
-#define NES_CPU_FREQ_NTSC 1789773
-#define NES_CPU_FREQ_PAL 1662607
-#define NES_CPU_CYCLES_PER_FRAME_NTSC 29780.5 // 60.099 Hz
-#define NES_CPU_CYCLES_PER_FRAME_PAL 33247.5 // 50.007 Hz
+// NOTE: Machine dependent tables are indexed by FamMachine, so index 0 is NTSC
+static const double NES_CPU_FREQ[2] = { 1789773.0, 1662607.0 };
+static const double NES_CPU_CYCLES_PER_FRAME[2] = { 29780.5, 33247.5 }; // 60.099 Hz / 50.007 Hz
 
-#define QUARTER_FRAME_CLOCK 3729
-#define HALF_FRAME_CLOCK 7457
-#define THREEQUARTERS_FRAME_CLOCK 11186
-#define FRAME_CLOCK 14915
-#define FRAME_CLOCK_MODE1 18641
+typedef enum {
+    QUARTER_FRAME_CLOCK = 0,
+    HALF_FRAME_CLOCK,
+    THREEQUARTERS_FRAME_CLOCK,
+    FRAME_CLOCK,
+    FRAME_CLOCK_MODE1,
+
+    FRAME_CLOCK_COUNT,
+} FrameSequencerStep;
+
+// NOTE: These are one larger than the values on Nesdev, because Nesdev counts the steps in half
+// APU cycles (NTSC quarter frame at 3728.5) while clock_counter is incremented before it's
+// compared, so a step at APU cycle 3728.5 lands on counter value 3729. In other words, each
+// entry is the Nesdev value rounded up.
+static const uint16_t FRAME_SEQ_CLOCK[2][FRAME_CLOCK_COUNT] = {
+    { 3729, 7457, 11186, 14915, 18641 }, // NTSC (CPU cycles 7457, 14913, 22371, 29829, 37281)
+    { 4157, 8314, 12470, 16627, 20783 }  // PAL (CPU cycles 8313, 16627, 24939, 33253, 41565)
+};
 
 static const uint8_t PULSE_SEQ[4] = {
     0b00000001,
@@ -32,20 +44,14 @@ static const uint8_t LENGTH_TABLE[32] = {
 
 // NOTE: These noise period values are half what is written on Nesdev, 
 // because they're APU cycles instead of CPU cycles
-static const uint16_t NOISE_PERIOD_NTSC[16] = {
-    2, 4, 8, 16, 32, 48, 64, 80, 101, 127, 190, 254, 381, 508, 1017, 2034
+static const uint16_t NOISE_PERIOD[2][16] = {
+    { 2, 4, 8, 16, 32, 48, 64, 80, 101, 127, 190, 254, 381, 508, 1017, 2034 }, // NTSC
+    { 2, 4, 7, 15, 30, 44, 59, 74, 94, 118, 177, 236, 354, 472, 945, 1889 }    // PAL
 };
 
-static const uint16_t NOISE_PERIOD_PAL[16] = {
-    2, 4, 7, 15, 30, 44, 59, 74, 94, 118, 177, 236, 354, 472, 945, 1889
-};
-
-static const uint16_t DMC_RATE_NTSC[16] = {
-    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54
-};
-
-static const uint16_t DMC_RATE_PAL[16] = {
-    398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50
+static const uint16_t DMC_RATE[2][16] = {
+    { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 }, // NTSC
+    { 398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50 }   // PAL
 };
 
 // Mixer output value tables
@@ -229,6 +235,7 @@ struct FamApu {
 
     uint8_t sequencer_mode : 1;
     uint8_t frame_interrupt_inhibit : 1;
+    uint8_t machine : 1; // FamMachine, NTSC is 0
 
     int64_t clock_counter;
 };
@@ -349,7 +356,7 @@ static void noise_clock_length_counter(NoiseChannel* noise) {
     }
 }
 
-static void noise_clock_timer(NoiseChannel* noise) {
+static void noise_clock_timer(NoiseChannel* noise, uint8_t machine) {
     if (noise->timer_counter > 0) {
         noise->timer_counter--;
     }
@@ -362,8 +369,7 @@ static void noise_clock_timer(NoiseChannel* noise) {
         noise->shift_register >>= 1;
         noise->shift_register |= (feedback_bit << 14);
 
-        // TODO: PAL support
-        noise->timer_counter = NOISE_PERIOD_NTSC[noise->period];
+        noise->timer_counter = NOISE_PERIOD[machine][noise->period];
     }
 }
 
@@ -412,7 +418,7 @@ static bool dmc_try_fill_buffer(DPCMChannel* dmc) {
     return interrupt;
 }
 
-static bool dmc_clock_timer(DPCMChannel* dmc) {
+static bool dmc_clock_timer(DPCMChannel* dmc, uint8_t machine) {
     bool interrupt = false;
 
     // NOTE: DMC ticks at CPU rate
@@ -453,8 +459,7 @@ static bool dmc_clock_timer(DPCMChannel* dmc) {
                 }
             }
 
-            // TODO: PAL support
-            dmc->timer_counter = DMC_RATE_NTSC[dmc->sample_rate];
+            dmc->timer_counter = DMC_RATE[machine][dmc->sample_rate];
         }
     }
 
@@ -591,8 +596,8 @@ static void apu_write_dmc_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
-FamResult fam_apu_init(FamApu** out_apu) {
-    if (out_apu == NULL) {
+FamResult fam_apu_init(FamApu** out_apu, uint8_t machine) {
+    if (out_apu == NULL || machine > FAM_MACHINE_PAL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
     FamApu* apu = (FamApu*)calloc(1, sizeof(FamApu));
@@ -600,10 +605,11 @@ FamResult fam_apu_init(FamApu** out_apu) {
         return FAM_ERROR_OUT_OF_MEMORY;
     }
 
+    apu->machine = machine;
+
     // TODO: Should these be in their own function?
     apu->noise.shift_register = 1;
-    // TODO: PAL support
-    apu->noise.timer_counter = NOISE_PERIOD_NTSC[0];
+    apu->noise.timer_counter = NOISE_PERIOD[machine][0];
 
     *out_apu = apu;
     return FAM_SUCCESS;
@@ -613,6 +619,10 @@ void fam_apu_free(FamApu* apu) {
     if (apu == NULL) return;
 
     free(apu);
+}
+
+uint8_t fam_apu_get_machine(const FamApu* apu) {
+    return apu->machine;
 }
 
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
@@ -749,17 +759,19 @@ void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data) {
 }
 
 void fam_apu_clock(FamApu* apu) {
+    const uint16_t* frame_seq_clock = FRAME_SEQ_CLOCK[apu->machine];
+
     apu->clock_counter++;
 
-    if (apu->clock_counter == QUARTER_FRAME_CLOCK) {
+    if (apu->clock_counter == frame_seq_clock[QUARTER_FRAME_CLOCK]) {
         apu_clock_quarter_frame(apu);
-    } else if (apu->clock_counter == HALF_FRAME_CLOCK) {
+    } else if (apu->clock_counter == frame_seq_clock[HALF_FRAME_CLOCK]) {
         apu_clock_quarter_frame(apu);
         apu_clock_half_frame(apu);
-    } else if (apu->clock_counter == THREEQUARTERS_FRAME_CLOCK) {
+    } else if (apu->clock_counter == frame_seq_clock[THREEQUARTERS_FRAME_CLOCK]) {
         apu_clock_quarter_frame(apu);
-    } else if ((apu->sequencer_mode == 0 && apu->clock_counter == FRAME_CLOCK) 
-        || (apu->sequencer_mode == 1 && apu->clock_counter == FRAME_CLOCK_MODE1)) {
+    } else if ((apu->sequencer_mode == 0 && apu->clock_counter == frame_seq_clock[FRAME_CLOCK])
+        || (apu->sequencer_mode == 1 && apu->clock_counter == frame_seq_clock[FRAME_CLOCK_MODE1])) {
         apu_clock_quarter_frame(apu);
         apu_clock_half_frame(apu);
         apu_clock_frame(apu);
@@ -768,8 +780,8 @@ void fam_apu_clock(FamApu* apu) {
     pulse_clock_timer(apu->pulse);
     pulse_clock_timer(apu->pulse + 1);
     triangle_clock_timer(&apu->triangle);
-    noise_clock_timer(&apu->noise);
-    apu->status.dmc_interrupt |= dmc_clock_timer(&apu->dmc);
+    noise_clock_timer(&apu->noise, apu->machine);
+    apu->status.dmc_interrupt |= dmc_clock_timer(&apu->dmc, apu->machine);
 }
 
 void fam_apu_get_sample(FamApu* apu, void* out_sample) {
@@ -793,11 +805,9 @@ void fam_apu_get_sample(FamApu* apu, void* out_sample) {
 }
 
 double fam_apu_get_freq(FamApu* apu) {
-    // TODO: Add PAL support
-    return (double)NES_CPU_FREQ_NTSC / 2.0;
+    return NES_CPU_FREQ[apu->machine] / 2.0;
 }
 
 double fam_apu_get_frame_cycles(FamApu* apu) {
-    // TODO: Add PAL support
-    return (double)NES_CPU_CYCLES_PER_FRAME_NTSC / 2.0;
+    return NES_CPU_CYCLES_PER_FRAME[apu->machine] / 2.0;
 }
