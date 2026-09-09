@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
     }
 
     FamPlayer* player;
-    err = fam_player_init(&player, apu, SAMPLE_RATE);
+    err = fam_player_init(&player, apu, SAMPLE_RATE, FAM_AUDIO_F32);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;

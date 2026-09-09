@@ -784,7 +784,7 @@ void fam_apu_clock(FamApu* apu) {
     apu->status.dmc_interrupt |= dmc_clock_timer(&apu->dmc, apu->machine);
 }
 
-void fam_apu_get_sample(FamApu* apu, void* out_sample) {
+void fam_apu_get_sample(FamApu* apu, float* out_sample) {
     uint8_t pulse_sum = pulse_get_output(apu->pulse);
     pulse_sum += pulse_get_output(apu->pulse + 1);
     
@@ -799,9 +799,9 @@ void fam_apu_get_sample(FamApu* apu, void* out_sample) {
     float mix = pulse_out + tnd_out;
 
     // TODO: High pass filter
-
-    // TODO: Support other output formats
-    *(float*)out_sample = mix;
+    // It has to run per fam_apu_clock at the APU clock rate, not
+    // once per output sample like this function is currently called
+    *out_sample = mix;
 }
 
 double fam_apu_get_freq(FamApu* apu) {

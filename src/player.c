@@ -7,6 +7,7 @@
 struct FamPlayer {
     FamApu* apu;
     uint32_t sample_rate;
+    uint8_t format;
     uint8_t machine; // Mirrors the APU's machine, streams must match it
 
     const FamMusic* music;
@@ -348,9 +349,14 @@ static void player_process_frame(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_rate) {
+FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_rate, uint8_t format) {
     if (out_player == NULL || apu == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    // TODO: Support other output formats
+    if (format != FAM_AUDIO_F32) {
+        return FAM_ERROR_UNSUPPORTED_FEATURE;
     }
 
     FamPlayer* player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
@@ -360,6 +366,7 @@ FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_r
 
     player->apu = apu;
     player->sample_rate = sample_rate;
+    player->format = format;
     player->machine = fam_apu_get_machine(apu);
     memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
 
@@ -378,14 +385,17 @@ void fam_player_free(FamPlayer* player) {
     free(player);
 }
 
-void fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
+FamResult fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
     if (sample_count == 0) {
-        return;
+        return FAM_SUCCESS;
     }
 
     if (player == NULL || out_samples == NULL) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
+
+    // NOTE: Only float output supported atm
+    float* samples = (float*)out_samples;
 
     const double apu_period = 1.0 / fam_apu_get_freq(player->apu);
     const double sample_time = 1.0 / (double)player->sample_rate;
@@ -404,11 +414,11 @@ void fam_player_process_samples(FamPlayer* player, int sample_count, void* out_s
             }
         }
 
-        // TODO: Other output formats
-        float* sample = ((float*)out_samples) + i;
         // TODO: Average samples across multiple APU clocks to prevent aliasing
-        fam_apu_get_sample(player->apu, sample);
+        fam_apu_get_sample(player->apu, samples + i);
     }
+
+    return FAM_SUCCESS;
 }
 
 FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {

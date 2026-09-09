@@ -18,3 +18,7 @@ typedef enum {
     FAM_MACHINE_NTSC = 0,
     FAM_MACHINE_PAL  = 1,
 } FamMachine;
+
+typedef enum {
+    FAM_AUDIO_F32 = 0,
+} FamAudioFormat;
