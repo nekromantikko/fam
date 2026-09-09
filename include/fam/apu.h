@@ -43,6 +43,7 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
 void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
 void fam_apu_clock(FamApu* apu);
-void fam_apu_get_sample(FamApu* apu, void* out_sample);
+// NOTE: The APU always outputs raw floats 0..1
+void fam_apu_get_sample(FamApu* apu, float* out_sample);
 double fam_apu_get_freq(const FamApu* apu);
 double fam_apu_get_frame_cycles(const FamApu* apu);

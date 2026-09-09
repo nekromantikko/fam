@@ -18,3 +18,7 @@ typedef enum {
     FAM_REGION_NTSC = 0,
     FAM_REGION_PAL  = 1,
 } FamRegion;
+
+typedef enum {
+    FAM_AUDIO_F32 = 0,
+} FamAudioFormat;
