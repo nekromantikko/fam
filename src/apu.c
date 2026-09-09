@@ -596,8 +596,8 @@ static void apu_write_dmc_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
-FamResult fam_apu_init(FamApu** out_apu, uint8_t machine) {
-    if (out_apu == NULL || machine > FAM_MACHINE_PAL) {
+FamResult fam_apu_init(FamApu** out_apu, const FamApuConfig* config) {
+    if (out_apu == NULL || config == NULL || config->machine > FAM_MACHINE_PAL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
     FamApu* apu = (FamApu*)calloc(1, sizeof(FamApu));
@@ -605,11 +605,11 @@ FamResult fam_apu_init(FamApu** out_apu, uint8_t machine) {
         return FAM_ERROR_OUT_OF_MEMORY;
     }
 
-    apu->machine = machine;
+    apu->machine = config->machine;
 
     // TODO: Should these be in their own function?
     apu->noise.shift_register = 1;
-    apu->noise.timer_counter = NOISE_PERIOD[machine][0];
+    apu->noise.timer_counter = NOISE_PERIOD[apu->machine][0];
 
     *out_apu = apu;
     return FAM_SUCCESS;
@@ -621,8 +621,8 @@ void fam_apu_free(FamApu* apu) {
     free(apu);
 }
 
-uint8_t fam_apu_get_machine(const FamApu* apu) {
-    return apu->machine;
+FamMachine fam_apu_get_machine(const FamApu* apu) {
+    return (FamMachine)apu->machine;
 }
 
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {

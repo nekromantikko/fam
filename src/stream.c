@@ -226,8 +226,8 @@ void fam_music_free(FamMusic* music) {
     free(music);
 }
 
-uint8_t fam_music_get_machine(const FamMusic* music) {
-    return music->machine;
+FamMachine fam_music_get_machine(const FamMusic* music) {
+    return (FamMachine)music->machine;
 }
 
 FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_t* buffer) {
@@ -291,6 +291,6 @@ void fam_sfx_free(FamSfx* sfx) {
     free(sfx);
 }
 
-uint8_t fam_sfx_get_machine(const FamSfx* sfx) {
-    return sfx->machine;
+FamMachine fam_sfx_get_machine(const FamSfx* sfx) {
+    return (FamMachine)sfx->machine;
 }

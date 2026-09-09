@@ -170,7 +170,7 @@ static void test_machine(void) {
     FamMusic* music = NULL;
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_music_from_buffer(&music, size, buffer),
         "Test 1: a PAL music stream should load");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FAM_MACHINE_PAL, fam_music_get_machine(music),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_PAL, fam_music_get_machine(music),
         "Test 1: a PAL music stream should report itself as PAL");
     fam_music_free(music);
 
@@ -181,7 +181,7 @@ static void test_machine(void) {
     FamSfx* sfx = NULL;
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_sfx_from_buffer(&sfx, size, buffer),
         "Test 1: a PAL sfx stream should load");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FAM_MACHINE_PAL, fam_sfx_get_machine(sfx),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_PAL, fam_sfx_get_machine(sfx),
         "Test 1: a PAL sfx stream should report itself as PAL");
     fam_sfx_free(sfx);
 

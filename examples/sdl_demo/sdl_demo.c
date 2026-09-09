@@ -160,14 +160,21 @@ int main(int argc, char **argv) {
 
     // The APU has to match the machine the song was made for, otherwise the player refuses to play it
     FamApu* apu;
-    err = fam_apu_init(&apu, fam_music_get_machine(music));
+    const FamApuConfig apu_config = {
+        .machine = fam_music_get_machine(music)
+    };
+    err = fam_apu_init(&apu, &apu_config);
     if (err != FAM_SUCCESS) {
         printf("Initializing APU failed with error code %d\n", err);
         return 1;
     }
 
     FamPlayer* player;
-    err = fam_player_init(&player, apu, SAMPLE_RATE, FAM_AUDIO_F32);
+    const FamPlayerConfig player_config = {
+        .sample_rate = SAMPLE_RATE,
+        .format = FAM_AUDIO_F32
+    };
+    err = fam_player_init(&player, apu, &player_config);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;

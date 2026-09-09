@@ -470,15 +470,19 @@ static void test_pal(void) {
     uint8_t status;
     FamApu* pal_apu;
 
-    // Test 1: Machines other than NTSC and PAL should be rejected
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&pal_apu, 2),
+    // Test 1: Machines other than NTSC and PAL should be rejected, and so should a missing config
+    FamApuConfig config = { .machine = (FamMachine)2 };
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&pal_apu, &config),
         "Test 1: initializing an APU with an unknown machine should fail");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&pal_apu, NULL),
+        "Test 1: initializing an APU without a config should fail");
 
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_init(&pal_apu, FAM_MACHINE_PAL),
+    config.machine = FAM_MACHINE_PAL;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_init(&pal_apu, &config),
         "Test 1: initializing a PAL APU should succeed");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FAM_MACHINE_PAL, fam_apu_get_machine(pal_apu),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_PAL, fam_apu_get_machine(pal_apu),
         "Test 1: a PAL APU should report itself as PAL");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(FAM_MACHINE_NTSC, fam_apu_get_machine(apu),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_NTSC, fam_apu_get_machine(apu),
         "Test 1: an NTSC APU should report itself as NTSC");
 
     // Test 2: A PAL APU runs at the PAL CPU clock rate (in APU cycles, so half of it) and fits
@@ -517,7 +521,8 @@ static void test_pal(void) {
 }
 
 void setUp(void) {
-    fam_apu_init(&apu, FAM_MACHINE_NTSC);
+    const FamApuConfig config = { .machine = FAM_MACHINE_NTSC };
+    fam_apu_init(&apu, &config);
 }
 
 void tearDown(void) {

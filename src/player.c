@@ -349,13 +349,17 @@ static void player_process_frame(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_rate, uint8_t format) {
-    if (out_player == NULL || apu == NULL) {
+FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, const FamPlayerConfig* config) {
+    if (out_player == NULL || apu == NULL || config == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (config->sample_rate == 0) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     // TODO: Support other output formats
-    if (format != FAM_AUDIO_F32) {
+    if (config->format != FAM_AUDIO_F32) {
         return FAM_ERROR_UNSUPPORTED_FEATURE;
     }
 
@@ -365,8 +369,8 @@ FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_r
     }
 
     player->apu = apu;
-    player->sample_rate = sample_rate;
-    player->format = format;
+    player->sample_rate = config->sample_rate;
+    player->format = config->format;
     player->machine = fam_apu_get_machine(apu);
     memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
 
