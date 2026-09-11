@@ -3,9 +3,32 @@
 // The AccuracyCoin APU tests are in turn largely based on APU tests by blargg.
 
 #include <unity.h>
+#include <stdlib.h>
+#include <string.h>
 #include <fam/apu.h>
 
 static FamApu *apu;
+static void* apu_memory; // fam doesn't allocate, so the tests own the APU's memory
+
+// Allocates and initializes an APU, failing the test if either step doesn't work
+static FamApu* create_apu(FamMachine machine, void** out_memory) {
+    const FamApuConfig config = { .machine = machine };
+
+    size_t size = 0;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_get_memory_required(&config, &size),
+        "getting the required memory of a valid APU config should succeed");
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, size, "an APU needs a nonzero amount of memory");
+
+    void* memory = malloc(size);
+    TEST_ASSERT_NOT_NULL(memory);
+
+    FamApu* new_apu = NULL;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_init(&new_apu, memory, &config),
+        "initializing an APU into memory of the size it asked for should succeed");
+
+    *out_memory = memory;
+    return new_apu;
+}
 
 static void clock_apu(int cpu_cycles) {
     // NOTE: fam_apu_clock advances by one APU cycle (= 2 CPU cycles)
@@ -179,6 +202,109 @@ static void test_length_counter_noise(void) {
 static void test_length_table_noise(void) {
     setup_noise();
     test_length_table(0x400F);
+}
+
+// Creating an APU is two steps the caller drives: ask how much memory the config needs, then hand
+// it that memory. Neither step can check that the memory is really there or really that big, so
+// these cover what they can check
+static void test_creation(void) {
+    const FamApuConfig config = { .machine = FAM_MACHINE_NTSC };
+    const FamApuConfig unknown_machine = { .machine = (FamMachine)(FAM_MACHINE_PAL + 1) };
+    size_t size = 0;
+
+    // Test 1: A machine this version doesn't know about
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
+        fam_apu_get_memory_required(&unknown_machine, &size),
+        "Test 1: an unknown machine should be refused by the size query");
+
+    // Test 2: Missing arguments
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
+        fam_apu_get_memory_required(NULL, &size),
+        "Test 2: asking without a config should fail");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
+        fam_apu_get_memory_required(&config, NULL),
+        "Test 2: asking without somewhere to put the answer should fail");
+
+    // Test 3: A valid config needs a real amount of memory
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_get_memory_required(&config, &size),
+        "Test 3: a valid config should have a size");
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, size, "Test 3: an APU can't need zero memory");
+
+    // Test 4: The alignment has to be something a caller can actually align to
+    const size_t alignment = fam_apu_get_memory_alignment();
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, alignment, "Test 4: alignment can't be zero");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, alignment & (alignment - 1),
+        "Test 4: alignment should be a power of two");
+
+    void* memory = malloc(size);
+    TEST_ASSERT_NOT_NULL(memory);
+    FamApu* new_apu = NULL;
+
+    // Test 5: Init should refuse the same configs the size query refuses, otherwise a caller who
+    // reuses a known size and only calls init would never see the error
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
+        fam_apu_init(&new_apu, memory, &unknown_machine),
+        "Test 5: an unknown machine should be refused by init");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&new_apu, memory, NULL),
+        "Test 5: initializing without a config should fail");
+
+    // Test 6: Init needs both somewhere to put the APU and memory to build it in
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(NULL, memory, &config),
+        "Test 6: initializing without an out parameter should fail");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&new_apu, NULL, &config),
+        "Test 6: initializing without memory should fail");
+
+    // Test 7: A valid creation
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_init(&new_apu, memory, &config),
+        "Test 7: initializing into the memory the size query asked for should succeed");
+    TEST_ASSERT_NOT_NULL_MESSAGE(new_apu, "Test 7: a successful init should return an APU");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_NTSC, fam_apu_get_machine(new_apu),
+        "Test 7: the APU should be built for the machine the config asked for");
+
+    // Test 8: Since fam doesn't allocate, init has to zero the memory itself. Memory out of an
+    // arena or a reused buffer holds whatever was there before, and an APU built in it has to
+    // come out as silent as one built in fresh memory. The channel bits are what would show it,
+    // they'd read as playing if the length counters came up full of garbage
+    memset(memory, 0xFF, size);
+    TEST_ASSERT_EQUAL_INT(FAM_SUCCESS, fam_apu_init(&new_apu, memory, &config));
+    uint8_t status = 0;
+    fam_apu_read_register(new_apu, 0x4015, &status);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x1F,
+        "Test 8: an APU built in dirty memory should still start out with nothing playing");
+
+    fam_apu_shutdown(new_apu);
+    free(memory);
+}
+
+// Reading a register has to overwrite the whole out parameter. If any of the caller's value can
+// survive the read, every read carries whatever that variable happened to hold, which differs by
+// platform and turns into a bug that only shows up on someone else's machine.
+// NOTE: This deliberately checks that two reads agree rather than checking a specific value, so
+// it still holds if bits the APU doesn't drive are ever given real behaviour
+// This test was added due to a previous faulty implementation of open bus behaviour which caused the issue described
+static void test_read_overwrites_output(void) {
+    // Reading $4015 clears the frame interrupt, so keep it inhibited and don't clock between the
+    // two reads. Otherwise they'd be allowed to differ
+    fam_apu_write_register(apu, 0x4017, 0x40); // 4-step sequence, IRQ disabled
+
+    uint8_t from_zeroes = 0x00;
+    uint8_t from_ones = 0xFF;
+    fam_apu_read_register(apu, 0x4015, &from_zeroes);
+    fam_apu_read_register(apu, 0x4015, &from_ones);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(from_zeroes, from_ones,
+        "Test 1: two reads of a silent APU should agree, whatever the out parameter held before");
+
+    // Test 2: The same with a channel playing, so this isn't just comparing two zeroes
+    setup_pulse1();
+    fam_apu_write_register(apu, 0x4003, 0x18); // Load pulse 1's length counter
+    from_zeroes = 0x00;
+    from_ones = 0xFF;
+    fam_apu_read_register(apu, 0x4015, &from_zeroes);
+    fam_apu_read_register(apu, 0x4015, &from_ones);
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x01, from_zeroes & 0x1F,
+        "Test 2: pulse 1 should be playing after its length counter is loaded");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(from_zeroes, from_ones,
+        "Test 2: two reads with a channel playing should agree");
 }
 
 static void test_frame_counter_irq(void) {
@@ -468,18 +594,10 @@ static void clock_apu_cycles(FamApu* target, int apu_cycles) {
 
 static void test_pal(void) {
     uint8_t status;
-    FamApu* pal_apu;
+    void* pal_memory;
 
-    // Test 1: Machines other than NTSC and PAL should be rejected, and so should a missing config
-    FamApuConfig config = { .machine = (FamMachine)2 };
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&pal_apu, &config),
-        "Test 1: initializing an APU with an unknown machine should fail");
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT, fam_apu_init(&pal_apu, NULL),
-        "Test 1: initializing an APU without a config should fail");
-
-    config.machine = FAM_MACHINE_PAL;
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_apu_init(&pal_apu, &config),
-        "Test 1: initializing a PAL APU should succeed");
+    // Test 1: A PAL APU should report itself as PAL, an NTSC one as NTSC
+    FamApu* pal_apu = create_apu(FAM_MACHINE_PAL, &pal_memory);
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_PAL, fam_apu_get_machine(pal_apu),
         "Test 1: a PAL APU should report itself as PAL");
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_NTSC, fam_apu_get_machine(apu),
@@ -517,20 +635,23 @@ static void test_pal(void) {
     TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x00, status & 0x01,
         "Test 4: on NTSC the length counter should expire after an NTSC frame");
 
-    fam_apu_free(pal_apu);
+    fam_apu_shutdown(pal_apu);
+    free(pal_memory);
 }
 
 void setUp(void) {
-    const FamApuConfig config = { .machine = FAM_MACHINE_NTSC };
-    fam_apu_init(&apu, &config);
+    apu = create_apu(FAM_MACHINE_NTSC, &apu_memory);
 }
 
 void tearDown(void) {
-    fam_apu_free(apu);
+    fam_apu_shutdown(apu);
+    free(apu_memory);
 }
 
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_creation);
+    RUN_TEST(test_read_overwrites_output);
     RUN_TEST(test_length_counter_pulse1);
     RUN_TEST(test_length_table_pulse1);
     RUN_TEST(test_length_counter_pulse2);

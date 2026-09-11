@@ -6,6 +6,7 @@
 
 #include <unity.h>
 #include <string.h>
+#include <stdlib.h>
 #include <fam/stream.h>
 #include <fam/common.h>
 
@@ -92,33 +93,56 @@ static size_t build_file(const FileParams* params, uint8_t* buffer) {
     return offset;
 }
 
-// Loads a music file built from params and checks the result, freeing it if it loaded
+// Loads a music file built from params and checks the result. A malformed file is rejected by
+// the size query rather than by loading, so both steps are checked against the same expectation
 static void assert_music_result(const FileParams* params, FamResult expected, const char* message) {
     uint8_t buffer[FILE_SIZE];
     size_t size = build_file(params, buffer);
 
+    size_t required_size = 0;
+    FamResult size_result = fam_music_get_memory_required(size, buffer, &required_size);
+    if (size_result != FAM_SUCCESS) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(expected, size_result, message);
+        return;
+    }
+
+    void* memory = malloc(required_size);
+    TEST_ASSERT_NOT_NULL(memory);
+
     FamMusic* music = NULL;
-    FamResult result = fam_music_from_buffer(&music, size, buffer);
+    FamResult result = fam_music_from_buffer(&music, memory, size, buffer);
     TEST_ASSERT_EQUAL_INT_MESSAGE(expected, result, message);
 
     if (result == FAM_SUCCESS) {
         TEST_ASSERT_NOT_NULL_MESSAGE(music, "a successful load should return a music object");
-        fam_music_free(music);
     }
+
+    free(memory);
 }
 
 static void assert_sfx_result(const FileParams* params, FamResult expected, const char* message) {
     uint8_t buffer[FILE_SIZE];
     size_t size = build_file(params, buffer);
 
+    size_t required_size = 0;
+    FamResult size_result = fam_sfx_get_memory_required(size, buffer, &required_size);
+    if (size_result != FAM_SUCCESS) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(expected, size_result, message);
+        return;
+    }
+
+    void* memory = malloc(required_size);
+    TEST_ASSERT_NOT_NULL(memory);
+
     FamSfx* sfx = NULL;
-    FamResult result = fam_sfx_from_buffer(&sfx, size, buffer);
+    FamResult result = fam_sfx_from_buffer(&sfx, memory, size, buffer);
     TEST_ASSERT_EQUAL_INT_MESSAGE(expected, result, message);
 
     if (result == FAM_SUCCESS) {
         TEST_ASSERT_NOT_NULL_MESSAGE(sfx, "a successful load should return an sfx object");
-        fam_sfx_free(sfx);
     }
+
+    free(memory);
 }
 
 static void test_channel_mask(void) {
@@ -167,23 +191,30 @@ static void test_machine(void) {
     // Test 1: The machine a stream was made for should survive loading
     params.machine = FAM_MACHINE_PAL;
     size_t size = build_file(&params, buffer);
+    size_t required_size = 0;
+    TEST_ASSERT_EQUAL_INT(FAM_SUCCESS, fam_music_get_memory_required(size, buffer, &required_size));
+    void* music_memory = malloc(required_size);
     FamMusic* music = NULL;
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_music_from_buffer(&music, size, buffer),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS,
+        fam_music_from_buffer(&music, music_memory, size, buffer),
         "Test 1: a PAL music stream should load");
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_PAL, fam_music_get_machine(music),
         "Test 1: a PAL music stream should report itself as PAL");
-    fam_music_free(music);
+    free(music_memory);
 
     // The same for sound effects, which is what the player checks before playing one
     FileParams sfx_file = sfx_params();
     sfx_file.machine = FAM_MACHINE_PAL;
     size = build_file(&sfx_file, buffer);
+    TEST_ASSERT_EQUAL_INT(FAM_SUCCESS, fam_sfx_get_memory_required(size, buffer, &required_size));
+    void* sfx_memory = malloc(required_size);
     FamSfx* sfx = NULL;
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS, fam_sfx_from_buffer(&sfx, size, buffer),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_SUCCESS,
+        fam_sfx_from_buffer(&sfx, sfx_memory, size, buffer),
         "Test 1: a PAL sfx stream should load");
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_MACHINE_PAL, fam_sfx_get_machine(sfx),
         "Test 1: a PAL sfx stream should report itself as PAL");
-    fam_sfx_free(sfx);
+    free(sfx_memory);
 
     // Test 2: Machines we don't know about are invalid
     params.machine = FAM_MACHINE_PAL + 1;
@@ -242,18 +273,29 @@ static void test_header_validation(void) {
     uint8_t buffer[FILE_SIZE];
     params = music_params();
     build_file(&params, buffer);
-    FamMusic* music = NULL;
+    size_t required_size = 0;
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_FORMAT,
-        fam_music_from_buffer(&music, HEADER_SIZE / 2, buffer),
+        fam_music_get_memory_required(HEADER_SIZE / 2, buffer, &required_size),
         "Test 8: a truncated file should be refused");
 
     // Test 9: Missing arguments
+    TEST_ASSERT_EQUAL_INT(FAM_SUCCESS, fam_music_get_memory_required(FILE_SIZE, buffer, &required_size));
+    void* memory = malloc(required_size);
+    FamMusic* music = NULL;
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
-        fam_music_from_buffer(NULL, FILE_SIZE, buffer),
+        fam_music_from_buffer(NULL, memory, FILE_SIZE, buffer),
         "Test 9: loading without an out parameter should fail");
     TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
-        fam_music_from_buffer(&music, FILE_SIZE, NULL),
+        fam_music_from_buffer(&music, memory, FILE_SIZE, NULL),
         "Test 9: loading without a buffer should fail");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
+        fam_music_get_memory_required(FILE_SIZE, buffer, NULL),
+        "Test 9: asking for the size without somewhere to put it should fail");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FAM_ERROR_INVALID_ARGUMENT,
+        fam_music_from_buffer(&music, NULL, FILE_SIZE, buffer),
+        "Test 9: loading without memory should fail");
+
+    free(memory);
 }
 
 void setUp(void) {
@@ -264,9 +306,9 @@ void tearDown(void) {
 
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_header_validation);
     RUN_TEST(test_channel_mask);
     RUN_TEST(test_sfx_channel_id);
     RUN_TEST(test_machine);
-    RUN_TEST(test_header_validation);
     return UNITY_END();
 }

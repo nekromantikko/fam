@@ -12,8 +12,10 @@ typedef struct FamPlayerConfig {
     FamAudioFormat format;
 } FamPlayerConfig;
 
-FAM_API FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, const FamPlayerConfig* config);
-FAM_API void fam_player_free(FamPlayer* player);
+FAM_API FamResult fam_player_get_memory_required(const FamPlayerConfig* config, size_t* out_size);
+FAM_API size_t fam_player_get_memory_alignment(void);
+FAM_API FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, const FamPlayerConfig* config);
+FAM_API void fam_player_shutdown(FamPlayer* player);
 FAM_API FamResult fam_player_process_samples(FamPlayer* player, int count, void* out_samples);
 
 // NOTE: Music and sfx can only be played on an APU matching their machine (NTSC/PAL), otherwise

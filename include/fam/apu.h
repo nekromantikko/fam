@@ -40,8 +40,10 @@ typedef struct FamApuConfig {
     FamMachine machine;
 } FamApuConfig;
 
-FAM_API FamResult fam_apu_init(FamApu** out_apu, const FamApuConfig* config);
-FAM_API void fam_apu_free(FamApu* apu);
+FAM_API FamResult fam_apu_get_memory_required(const FamApuConfig* config, size_t* out_size);
+FAM_API size_t fam_apu_get_memory_alignment(void);
+FAM_API FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* config);
+FAM_API void fam_apu_shutdown(FamApu* apu);
 FAM_API FamMachine fam_apu_get_machine(const FamApu* apu);
 FAM_API FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FAM_API FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);

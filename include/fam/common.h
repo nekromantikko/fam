@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 
 // Every public function is marked FAM_API. It's empty for a static build (the default) and only
 // does anything when fam is built as a shared library, which is defined by:
