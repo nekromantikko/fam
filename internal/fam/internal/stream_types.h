@@ -1,4 +1,6 @@
 #pragma once
+#include <fam/common.h>
+#include <stdint.h>
 
 #define MUSIC_NO_LOOP UINT32_MAX
 #define SFX_CHANNEL_COUNT 4
@@ -23,6 +25,10 @@ typedef enum {
     CHAN_BIT_NOISE              = 1 << CHAN_ID_NOISE,
     CHAN_BIT_DMC                = 1 << CHAN_ID_DMC,
 } ChannelFlags;
+
+// NOTE: Every channel this version knows about. Bits outside this belong to expansion chips
+// that aren't supported yet
+#define CHANNEL_MASK_ALL ((1ull << CHAN_COUNT) - 1)
 
 typedef enum {
     OP_PULSE1_WRITE0        = 0x0,
@@ -66,11 +72,6 @@ typedef struct DPCMSampleBank {
     uint32_t size;
     uint8_t* data;
 } DPCMSampleBank;
-
-typedef enum {
-    FAM_MACHINE_NTSC = 0,
-    FAM_MACHINE_PAL  = 1,
-} FamMachine;
 
 struct FamMusic {
     uint64_t channel_mask;

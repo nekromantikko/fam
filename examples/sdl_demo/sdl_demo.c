@@ -143,20 +143,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    FamApu* apu;
-    FamResult err = fam_apu_init(&apu);
-    if (err != FAM_SUCCESS) {
-        printf("Initializing APU failed with error code %d\n", err);
-        return 1;
-    }
-
-    FamPlayer* player;
-    err = fam_player_init(&player, apu, SAMPLE_RATE);
-    if (err != FAM_SUCCESS) {
-        printf("Initializing player failed with error code %d\n", err);
-        return 1;
-    }
-
     size_t file_size;
     uint8_t* file_data;
     if (!read_entire_file(argv[1], &file_size, &file_data)) {
@@ -164,11 +150,58 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    size_t music_size;
+    FamResult err = fam_music_get_memory_required(file_size, file_data, &music_size);
+    if (err != FAM_SUCCESS) {
+        printf("Loading '%s' failed with error code %d\n", argv[1], err);
+        free(file_data);
+        return 1;
+    }
+
+    void* music_memory = malloc(music_size);
     FamMusic* music;
-    err = fam_music_from_buffer(&music, file_size, file_data);
+    err = fam_music_from_buffer(&music, music_memory, file_size, file_data);
     free(file_data);
     if (err != FAM_SUCCESS) {
         printf("Loading '%s' failed with error code %d\n", argv[1], err);
+        return 1;
+    }
+
+    // The APU has to match the machine the song was made for, otherwise the player refuses to play it
+    const FamApuConfig apu_config = {
+        .machine = fam_music_get_machine(music)
+    };
+    size_t apu_size;
+    err = fam_apu_get_memory_required(&apu_config, &apu_size);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing APU failed with error code %d\n", err);
+        return 1;
+    }
+
+    void* apu_memory = malloc(apu_size);
+    FamApu* apu;
+    err = fam_apu_init(&apu, apu_memory, &apu_config);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing APU failed with error code %d\n", err);
+        return 1;
+    }
+
+    const FamPlayerConfig player_config = {
+        .sample_rate = SAMPLE_RATE,
+        .format = FAM_AUDIO_F32
+    };
+    size_t player_size;
+    err = fam_player_get_memory_required(&player_config, &player_size);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing player failed with error code %d\n", err);
+        return 1;
+    }
+
+    void* player_memory = malloc(player_size);
+    FamPlayer* player;
+    err = fam_player_init(&player, player_memory, apu, &player_config);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing player failed with error code %d\n", err);
         return 1;
     }
 
@@ -200,7 +233,8 @@ int main(int argc, char **argv) {
     }
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing %s...\n", argv[1]);
+    printf("Playing %s (%s)...\n", argv[1],
+        fam_music_get_machine(music) == FAM_MACHINE_PAL ? "PAL" : "NTSC");
     printf("Press Enter to quit.\n");
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
@@ -210,9 +244,13 @@ int main(int argc, char **argv) {
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
-    fam_music_free(music);
-    fam_player_free(player);
-    fam_apu_free(apu);
+    // Shutting down detaches the objects from each other, the memory is ours to release
+    fam_player_shutdown(player);
+    fam_apu_shutdown(apu);
+
+    free(player_memory);
+    free(apu_memory);
+    free(music_memory);
 
     return 0;
 }

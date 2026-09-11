@@ -1,12 +1,14 @@
 ﻿#include <fam/player.h>
 #include <fam/apu.h>
 #include <fam/internal/stream_types.h>
-#include <stdlib.h>
 #include <string.h>
+#include <stdalign.h>
 
 struct FamPlayer {
     FamApu* apu;
     uint32_t sample_rate;
+    uint8_t format;
+    uint8_t machine; // Mirrors the APU's machine, streams must match it
 
     const FamMusic* music;
     uint32_t music_pos;
@@ -347,18 +349,44 @@ static void player_process_frame(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_rate) {
-    if (out_player == NULL || apu == NULL) {
+FamResult fam_player_get_memory_required(const FamPlayerConfig* config, size_t* out_size) {
+    if (out_size == NULL || config == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
-    FamPlayer* player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
-    if (player == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+    if (config->sample_rate == 0) {
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
 
+    // TODO: Support other output formats
+    if (config->format != FAM_AUDIO_F32) {
+        return FAM_ERROR_UNSUPPORTED_FEATURE;
+    }
+
+    *out_size = sizeof(FamPlayer);
+    return FAM_SUCCESS;
+}
+
+size_t fam_player_get_memory_alignment(void) {
+    return alignof(FamPlayer);
+}
+
+FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, const FamPlayerConfig* config) {
+    if (out_player == NULL || apu == NULL || memory == NULL || config == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (config->sample_rate == 0) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    FamPlayer* player = (FamPlayer*)memory;
+    memset(player, 0, sizeof(FamPlayer));
+
     player->apu = apu;
-    player->sample_rate = sample_rate;
+    player->sample_rate = config->sample_rate;
+    player->format = config->format;
+    player->machine = fam_apu_get_machine(apu);
     memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
 
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
@@ -372,18 +400,28 @@ FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_r
     return FAM_SUCCESS;
 }
 
-void fam_player_free(FamPlayer* player) {
-    free(player);
+void fam_player_shutdown(FamPlayer* player) {
+    if (player == NULL) {
+        return;
+    }
+
+    if (player->apu != NULL) {
+        fam_apu_set_dmc_reader(player->apu, NULL, NULL);
+        player->apu = NULL;
+    }
 }
 
-void fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
+FamResult fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
     if (sample_count == 0) {
-        return;
+        return FAM_SUCCESS;
     }
 
     if (player == NULL || out_samples == NULL) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
+
+    // NOTE: Only float output supported atm
+    float* samples = (float*)out_samples;
 
     const double apu_period = 1.0 / fam_apu_get_freq(player->apu);
     const double sample_time = 1.0 / (double)player->sample_rate;
@@ -402,16 +440,20 @@ void fam_player_process_samples(FamPlayer* player, int sample_count, void* out_s
             }
         }
 
-        // TODO: Other output formats
-        float* sample = ((float*)out_samples) + i;
         // TODO: Average samples across multiple APU clocks to prevent aliasing
-        fam_apu_get_sample(player->apu, sample);
+        fam_apu_get_sample(player->apu, samples + i);
     }
+
+    return FAM_SUCCESS;
 }
 
-void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
+FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     if (player == NULL || music == NULL) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (music->machine != player->machine) {
+        return FAM_ERROR_MACHINE_MISMATCH;
     }
 
     player->music = music;
@@ -424,6 +466,8 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     player_clear_reserve(player);
 
     player_update_status_register(player, true);
+
+    return FAM_SUCCESS;
 }
 
 void fam_player_pause_music(FamPlayer* player) {
@@ -471,13 +515,17 @@ void fam_player_stop_music(FamPlayer* player) {
     player_update_status_register(player, false);
 }
 
-void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
+FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     if (player == NULL || sfx == NULL) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     if (sfx->channel_id >= SFX_CHANNEL_COUNT) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (sfx->machine != player->machine) {
+        return FAM_ERROR_MACHINE_MISMATCH;
     }
 
     player->sfx[sfx->channel_id] = sfx;
@@ -486,4 +534,6 @@ void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     player->sfx_skip_counter[sfx->channel_id] = 0;
 
     player_update_status_register(player, false);
+
+    return FAM_SUCCESS;
 }

@@ -10,3 +10,7 @@ FetchContent_MakeAvailable(Unity)
 add_executable(test_apu test_apu.c)
 target_link_libraries(test_apu PRIVATE fam unity)
 add_test(NAME apu COMMAND test_apu)
+
+add_executable(test_stream test_stream.c)
+target_link_libraries(test_stream PRIVATE fam unity)
+add_test(NAME stream COMMAND test_stream)

@@ -36,12 +36,20 @@ typedef enum {
     FAM_REGISTER_FRAME_COUNTER      = 0x4017
 } FamRegister;
 
-FamResult fam_apu_init(FamApu** out_apu);
-void fam_apu_free(FamApu* apu);
-FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
-FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
-void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
-void fam_apu_clock(FamApu* apu);
-void fam_apu_get_sample(FamApu* apu, void* out_sample);
-double fam_apu_get_freq(FamApu* apu);
-double fam_apu_get_frame_cycles(FamApu* apu);
+typedef struct FamApuConfig {
+    FamMachine machine;
+} FamApuConfig;
+
+FAM_API FamResult fam_apu_get_memory_required(const FamApuConfig* config, size_t* out_size);
+FAM_API size_t fam_apu_get_memory_alignment(void);
+FAM_API FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* config);
+FAM_API void fam_apu_shutdown(FamApu* apu);
+FAM_API FamMachine fam_apu_get_machine(const FamApu* apu);
+FAM_API FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
+FAM_API FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
+FAM_API void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
+FAM_API void fam_apu_clock(FamApu* apu);
+// NOTE: The APU always outputs raw floats 0..1
+FAM_API void fam_apu_get_sample(FamApu* apu, float* out_sample);
+FAM_API double fam_apu_get_freq(FamApu* apu);
+FAM_API double fam_apu_get_frame_cycles(FamApu* apu);

@@ -1,13 +1,13 @@
-#include <fam/io.h>
+#include <fam/stream.h>
 #include <fam/internal/stream_types.h>
 #include <fam/internal/buffer_reader.h>
-#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdalign.h>
 
 #define FAM_MAGIC "FAM"
-#define FAM_VERSION_MAJOR 1
-#define FAM_VERSION_MINOR 0
+#define FAM_STREAM_VERSION_MAJOR 1
+#define FAM_STREAM_VERSION_MINOR 0
 
 typedef enum {
     FAM_USAGE_MUSIC = 0,
@@ -29,6 +29,14 @@ typedef struct {
     uint8_t machine;
 } FamHeader;
 
+_Static_assert(alignof(FamMusic) >= alignof(DPCMSampleBank), "FamMusic has to be the most strictly aligned type in the block");
+_Static_assert(alignof(StreamOperation) == 1, "Stream operations must be byte-aligned");
+
+// The layout is one block: the struct, then the bank array, then the bank data, then the stream.
+// The bank array starts right after the struct, so the struct's size has to leave it aligned.
+// Bank data and stream operations are byte aligned, so they can follow anything
+_Static_assert(sizeof(FamMusic) % alignof(DPCMSampleBank) == 0, "sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank)!");
+
 static FamResult parse_header(BufferReader* reader, FamHeader* out) {
     uint32_t magic;
     buffer_reader_read(reader, &magic, sizeof(uint32_t));
@@ -40,8 +48,8 @@ static FamResult parse_header(BufferReader* reader, FamHeader* out) {
     buffer_reader_read(reader, &out->version_major, sizeof(uint32_t));
     buffer_reader_read(reader, &out->version_minor, sizeof(uint32_t));
     if (reader->error ||
-        out->version_major != FAM_VERSION_MAJOR ||
-        out->version_minor > FAM_VERSION_MINOR) {
+        out->version_major != FAM_STREAM_VERSION_MAJOR ||
+        out->version_minor > FAM_STREAM_VERSION_MINOR) {
         return FAM_ERROR_UNSUPPORTED_VERSION;
     }
 
@@ -53,9 +61,17 @@ static FamResult parse_header(BufferReader* reader, FamHeader* out) {
 
     buffer_reader_read(reader, &out->channel_id_mask, sizeof(uint64_t));
     if (reader->error ||
-        (out->usage == FAM_USAGE_SFX && 
+        (out->usage == FAM_USAGE_SFX &&
         out->channel_id_mask >= SFX_CHANNEL_COUNT)) {
         return FAM_ERROR_INVALID_FORMAT;
+    }
+
+    // NOTE: Channels outside the ones we know about are not an error in the file, they're
+    // channels of an expansion chip this version doesn't support yet. Refusing the whole stream
+    // is better than playing it with the expansion channels silently missing.
+    if (out->usage == FAM_USAGE_MUSIC &&
+        (out->channel_id_mask & ~CHANNEL_MASK_ALL) != 0) {
+        return FAM_ERROR_UNSUPPORTED_FEATURE;
     }
 
     if (out->usage == FAM_USAGE_MUSIC) {
@@ -109,9 +125,8 @@ static FamResult parse_header(BufferReader* reader, FamHeader* out) {
     return FAM_SUCCESS;
 }
 
-FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const uint8_t* buffer) {
-    // TODO: An allocation-free version?
-    if (out_music == NULL || buffer == NULL) {
+FamResult fam_music_get_memory_required(size_t buffer_size, const uint8_t* buffer, size_t* out_size) {
+    if (buffer == NULL || out_size == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -127,9 +142,6 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    // Determine required memory size
-    // NOTE: sizeof(FamMusic) must be a multiple of alignof(DPCMSampleBank)!
-    // As long as sizeof(FamMusic) is a multiple of 8, this holds
     size_t memory_size = sizeof(FamMusic) + header.music_dpcm_bank_count * sizeof(DPCMSampleBank) + header.stream_length * sizeof(StreamOperation);
 
     if (header.music_dpcm_bank_count > 0) {
@@ -137,8 +149,8 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
         for (size_t i = 0; i < header.music_dpcm_bank_count && !reader.error; i++) {
             uint32_t bank_size;
             buffer_reader_read(&reader, &bank_size, sizeof(uint32_t));
-            if (reader.error || 
-                bank_size > buffer_reader_remaining(&reader) || 
+            if (reader.error ||
+                bank_size > buffer_reader_remaining(&reader) ||
                 bank_size > MAX_DPCM_SAMPLE_BANK_SIZE ||
                 bank_size > SIZE_MAX - memory_size) {
                 return FAM_ERROR_INVALID_FORMAT;
@@ -152,9 +164,30 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    void* memory = malloc(memory_size);
-    if (memory == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+    *out_size = memory_size;
+    return FAM_SUCCESS;
+}
+
+size_t fam_music_get_memory_alignment(void) {
+    // NOTE: FamMusic is guaranteed to have the largest alignment, see assert at the top of the file
+    return alignof(FamMusic);
+}
+
+FamResult fam_music_from_buffer(FamMusic** out_music, void* memory, size_t buffer_size, const uint8_t* buffer) {
+    if (out_music == NULL || buffer == NULL || memory == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    BufferReader reader = buffer_reader_init(buffer, buffer_size);
+
+    FamHeader header;
+    FamResult header_result = parse_header(&reader, &header);
+    if (header_result != FAM_SUCCESS) {
+        return header_result;
+    }
+
+    if (header.usage != FAM_USAGE_MUSIC) {
+        return FAM_ERROR_INVALID_FORMAT;
     }
 
     FamMusic* music = (FamMusic*)memory;
@@ -202,7 +235,6 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     }
     
     if (reader.error) {
-        free(memory);
         return FAM_ERROR_INVALID_FORMAT;
     }
 
@@ -210,17 +242,12 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     return FAM_SUCCESS;
 }
 
-void fam_music_free(FamMusic* music) {
-    if (music == NULL) {
-        return;
-    }
-
-    free(music);
+FamMachine fam_music_get_machine(const FamMusic* music) {
+    return (FamMachine)music->machine;
 }
 
-FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_t* buffer) {
-    // TODO: An allocation-free version?
-    if (out_sfx == NULL || buffer == NULL) {
+FamResult fam_sfx_get_memory_required(size_t buffer_size, const uint8_t* buffer, size_t* out_size) {
+    if (buffer == NULL || out_size == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -236,19 +263,36 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
         return FAM_ERROR_INVALID_FORMAT;
     }
 
-    size_t memory_size = sizeof(FamSfx) + header.stream_length * sizeof(StreamOperation);
+    *out_size = sizeof(FamSfx) + header.stream_length * sizeof(StreamOperation);
+    return FAM_SUCCESS;
+}
 
-    void* memory = malloc(memory_size);
-    if (memory == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+size_t fam_sfx_get_memory_alignment(void) {
+    return alignof(FamSfx);
+}
+
+FamResult fam_sfx_from_buffer(FamSfx** out_sfx, void* memory, size_t buffer_size, const uint8_t* buffer) {
+    if (out_sfx == NULL || buffer == NULL || memory == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    BufferReader reader = buffer_reader_init(buffer, buffer_size);
+
+    FamHeader header;
+    FamResult header_result = parse_header(&reader, &header);
+    if (header_result != FAM_SUCCESS) {
+        return header_result;
+    }
+
+    if (header.usage != FAM_USAGE_SFX) {
+        return FAM_ERROR_INVALID_FORMAT;
     }
 
     FamSfx* sfx = (FamSfx*)memory;
     sfx->channel_id = (uint8_t)header.channel_id_mask;
+    sfx->machine = header.machine;
     sfx->stream_op_count = header.stream_length;
     sfx->stream = NULL;
-
-    uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamSfx);
 
     // Read stream ops
     if (header.stream_length > 0) {
@@ -264,7 +308,6 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
     }
 
     if (reader.error) {
-        free(memory);
         return FAM_ERROR_INVALID_FORMAT;
     }
 
@@ -272,10 +315,6 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
     return FAM_SUCCESS;
 }
 
-void fam_sfx_free(FamSfx* sfx) {
-    if (sfx == NULL) {
-        return;
-    }
-
-    free(sfx);
+FamMachine fam_sfx_get_machine(const FamSfx* sfx) {
+    return (FamMachine)sfx->machine;
 }
