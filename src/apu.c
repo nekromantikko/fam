@@ -385,8 +385,8 @@ static bool dmc_try_fill_buffer(DPCMChannel* dmc) {
     bool interrupt = false;
     
     if (!dmc->buffer_filled && dmc->bytes_remaining != 0) {
-        // TODO: Accurate CPU stall? From nesdev:
-        // "The CPU is stalled for 1-4 CPU cycles to read a sample byte."
+        // NOTE: On real hardware, the CPU is stalled for 1-4 CPU cycles to read a sample byte
+        // There's no CPU in fam, so I'm not modeling this behaviour
 
         if (dmc->reader != NULL) {
             dmc->sample_buffer = dmc->reader(dmc->reader_data, dmc->current_address);
@@ -484,7 +484,6 @@ static void apu_clock_half_frame(FamApu* apu) {
 
 static void apu_clock_frame(FamApu* apu) {
     if (apu->sequencer_mode == 0 && !apu->frame_interrupt_inhibit) {
-        // TODO: Do we want to fire an actual mock interrupt? (As a callback?)
         apu->status.frame_interrupt = 1;
     }
     apu->clock_counter = 0;
@@ -683,6 +682,8 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             break;
         }
         case FAM_REGISTER_FRAME_COUNTER: {
+            // NOTE: On real hardware, there's a 3-4 cycle delay depending on when the write happened.
+            // There's no CPU emulation in fam, so I'm not modeling this behaviour
             apu->clock_counter = 0;
             apu->sequencer_mode = data >> 7;
             apu->frame_interrupt_inhibit = (data >> 6) & 1;
