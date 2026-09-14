@@ -1,4 +1,4 @@
-#include <fam/io.h>
+#include <fam/stream.h>
 #include <fam/internal/stream_types.h>
 #include <fam/internal/buffer_reader.h>
 #include <stdlib.h>
@@ -6,8 +6,8 @@
 #include <string.h>
 
 #define FAM_MAGIC "FAM"
-#define FAM_VERSION_MAJOR 1
-#define FAM_VERSION_MINOR 0
+#define STREAM_VERSION_MAJOR 1
+#define STREAM_VERSION_MINOR 0
 
 typedef enum {
     FAM_USAGE_MUSIC = 0,
@@ -26,7 +26,7 @@ typedef struct {
     uint32_t stream_length; // Length in operations
     uint64_t stream_offset; // Absolute
     uint32_t music_loop_point;
-    uint8_t machine;
+    uint8_t region;
 } FamHeader;
 
 static FamResult parse_header(BufferReader* reader, FamHeader* out) {
@@ -40,8 +40,8 @@ static FamResult parse_header(BufferReader* reader, FamHeader* out) {
     buffer_reader_read(reader, &out->version_major, sizeof(uint32_t));
     buffer_reader_read(reader, &out->version_minor, sizeof(uint32_t));
     if (reader->error ||
-        out->version_major != FAM_VERSION_MAJOR ||
-        out->version_minor > FAM_VERSION_MINOR) {
+        out->version_major != STREAM_VERSION_MAJOR ||
+        out->version_minor > STREAM_VERSION_MINOR) {
         return FAM_ERROR_UNSUPPORTED_VERSION;
     }
 
@@ -101,8 +101,8 @@ static FamResult parse_header(BufferReader* reader, FamHeader* out) {
         out->music_loop_point = MUSIC_NO_LOOP;
     }
 
-    buffer_reader_read(reader, &out->machine, sizeof(uint8_t));
-    if (reader->error || out->machine > FAM_MACHINE_PAL) {
+    buffer_reader_read(reader, &out->region, sizeof(uint8_t));
+    if (reader->error || out->region > FAM_REGION_PAL) {
         return FAM_ERROR_INVALID_FORMAT;
     }
 
@@ -164,7 +164,7 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     music->stream_op_count = header.stream_length;
     music->stream = NULL;
     music->loop_point = header.music_loop_point;
-    music->machine = header.machine;
+    music->region = header.region;
 
     uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamMusic);
 
@@ -210,6 +210,10 @@ FamResult fam_music_from_buffer(FamMusic** out_music, size_t buffer_size, const 
     return FAM_SUCCESS;
 }
 
+uint8_t fam_music_get_region(const FamMusic* music) {
+    return music->region;
+}
+
 void fam_music_free(FamMusic* music) {
     if (music == NULL) {
         return;
@@ -245,6 +249,7 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
 
     FamSfx* sfx = (FamSfx*)memory;
     sfx->channel_id = (uint8_t)header.channel_id_mask;
+    sfx->region = header.region;
     sfx->stream_op_count = header.stream_length;
     sfx->stream = NULL;
 
@@ -270,6 +275,10 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
 
     *out_sfx = sfx;
     return FAM_SUCCESS;
+}
+
+uint8_t fam_sfx_get_region(const FamSfx* sfx) {
+    return sfx->region;
 }
 
 void fam_sfx_free(FamSfx* sfx) {

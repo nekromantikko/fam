@@ -67,11 +67,6 @@ typedef struct DPCMSampleBank {
     uint8_t* data;
 } DPCMSampleBank;
 
-typedef enum {
-    FAM_MACHINE_NTSC = 0,
-    FAM_MACHINE_PAL  = 1,
-} FamMachine;
-
 struct FamMusic {
     uint64_t channel_mask;
     uint32_t dpcm_sample_bank_count;
@@ -79,12 +74,12 @@ struct FamMusic {
     DPCMSampleBank* dpcm_sample_banks;
     StreamOperation* stream;
     uint32_t loop_point;
-    uint8_t machine;
+    uint8_t region;
 };
 
 struct FamSfx {
     uint8_t channel_id;
-    uint8_t machine;
+    uint8_t region;
     uint32_t stream_op_count;
     StreamOperation* stream;
 };

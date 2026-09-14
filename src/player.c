@@ -409,9 +409,13 @@ void fam_player_process_samples(FamPlayer* player, int sample_count, void* out_s
     }
 }
 
-void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
+FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     if (player == NULL || music == NULL) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (music->region != fam_apu_get_region(player->apu)) {
+        return FAM_ERROR_REGION_MISMATCH;
     }
 
     player->music = music;
@@ -424,6 +428,8 @@ void fam_player_play_music(FamPlayer* player, const FamMusic* music) {
     player_clear_reserve(player);
 
     player_update_status_register(player, true);
+
+    return FAM_SUCCESS;
 }
 
 void fam_player_pause_music(FamPlayer* player) {
@@ -471,13 +477,17 @@ void fam_player_stop_music(FamPlayer* player) {
     player_update_status_register(player, false);
 }
 
-void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
+FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     if (player == NULL || sfx == NULL) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     if (sfx->channel_id >= SFX_CHANNEL_COUNT) {
-        return;
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (sfx->region != fam_apu_get_region(player->apu)) {
+        return FAM_ERROR_REGION_MISMATCH;
     }
 
     player->sfx[sfx->channel_id] = sfx;
@@ -486,4 +496,6 @@ void fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     player->sfx_skip_counter[sfx->channel_id] = 0;
 
     player_update_status_register(player, false);
+
+    return FAM_SUCCESS;
 }

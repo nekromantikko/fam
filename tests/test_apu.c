@@ -597,7 +597,7 @@ static void test_dmc(void) {
 }
 
 void setUp(void) {
-    fam_apu_init(&apu);
+    fam_apu_init(&apu, FAM_REGION_NTSC);
 }
 
 void tearDown(void) {
