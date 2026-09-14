@@ -725,8 +725,9 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
         case FAM_REGISTER_NOISE_3:
             return FAM_ERROR_WRITE_ONLY;
         case FAM_REGISTER_STATUS: {
-            // Keep bit 5 as it was (Open bus approximation)
-            *out_data = (*out_data & 0b00100000) | (apu->raw_status_register & 0b11011111);
+            // NOTE: On real hardware, bit 5 is open bus.
+            // I'm not modeling open bus behaviour, so it's always zero
+            *out_data = apu->raw_status_register & 0b11011111;
             if (apu->pulse[0].length_counter == 0) *out_data &= 0b11111110;
             if (apu->pulse[1].length_counter == 0) *out_data &= 0b11111101;
             if (apu->triangle.length_counter == 0) *out_data &= 0b11111011;
