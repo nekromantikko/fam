@@ -24,6 +24,8 @@ typedef enum {
     CHAN_BIT_DMC                = 1 << CHAN_ID_DMC,
 } ChannelFlags;
 
+#define CHANNEL_MASK_SUPPORTED ((1ull << CHAN_COUNT) - 1)
+
 typedef enum {
     OP_PULSE1_WRITE0        = 0x0,
     OP_PULSE1_WRITE1        = 0x1,

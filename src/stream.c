@@ -52,10 +52,16 @@ static FamResult parse_header(BufferReader* reader, FamHeader* out) {
     }
 
     buffer_reader_read(reader, &out->channel_id_mask, sizeof(uint64_t));
-    if (reader->error ||
-        (out->usage == FAM_USAGE_SFX && 
-        out->channel_id_mask >= SFX_CHANNEL_COUNT)) {
+    if (reader->error) {
         return FAM_ERROR_INVALID_FORMAT;
+    }
+    
+    if (out->usage == FAM_USAGE_SFX) {
+        if (out->channel_id_mask >= SFX_CHANNEL_COUNT) {
+            return FAM_ERROR_INVALID_FORMAT;
+        }
+    } else if ((out->channel_id_mask & ~CHANNEL_MASK_SUPPORTED) != 0) {
+        return FAM_ERROR_UNSUPPORTED_FEATURE;
     }
 
     if (out->usage == FAM_USAGE_MUSIC) {
@@ -252,8 +258,6 @@ FamResult fam_sfx_from_buffer(FamSfx** out_sfx, size_t buffer_size, const uint8_
     sfx->region = header.region;
     sfx->stream_op_count = header.stream_length;
     sfx->stream = NULL;
-
-    uint8_t* mem_pos = (uint8_t*)memory + sizeof(FamSfx);
 
     // Read stream ops
     if (header.stream_length > 0) {
