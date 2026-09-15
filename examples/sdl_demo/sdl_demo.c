@@ -150,23 +150,36 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    size_t music_size;
+    FamResult err = fam_music_get_memory_required(file_size, file_data, &music_size);
+    if (err != FAM_SUCCESS) {
+        printf("Loading '%s' failed with error code %d\n", argv[1], err);
+        free(file_data);
+        return 1;
+    }
+
+    void* music_memory = malloc(music_size);
     FamMusic* music;
-    FamResult err = fam_music_from_buffer(&music, file_size, file_data);
+    err = fam_music_from_buffer(&music, music_memory, file_size, file_data);
     free(file_data);
     if (err != FAM_SUCCESS) {
         printf("Loading '%s' failed with error code %d\n", argv[1], err);
         return 1;
     }
 
+    size_t apu_size = fam_apu_get_memory_required();
+    void* apu_memory = malloc(apu_size);
     FamApu* apu;
-    err = fam_apu_init(&apu, fam_music_get_region(music));
+    err = fam_apu_init(&apu, apu_memory, fam_music_get_region(music));
     if (err != FAM_SUCCESS) {
         printf("Initializing APU failed with error code %d\n", err);
         return 1;
     }
 
+    size_t player_size = fam_player_get_memory_required();
+    void* player_memory = malloc(player_size);
     FamPlayer* player;
-    err = fam_player_init(&player, apu, SAMPLE_RATE, FAM_AUDIO_F32);
+    err = fam_player_init(&player, player_memory, apu, SAMPLE_RATE, FAM_AUDIO_F32);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;
@@ -210,9 +223,12 @@ int main(int argc, char **argv) {
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
-    fam_music_free(music);
-    fam_player_free(player);
-    fam_apu_free(apu);
+    fam_player_shutdown(player);
+    fam_apu_shutdown(apu);
+
+    free(player_memory);
+    free(apu_memory);
+    free(music_memory);
 
     return 0;
 }

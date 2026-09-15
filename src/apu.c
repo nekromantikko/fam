@@ -1,5 +1,6 @@
 #include <fam/apu.h>
-#include <stdlib.h>
+#include <string.h>
+#include <stdalign.h>
 
 typedef enum {
     QUARTER_FRAME_CLOCK = 0,
@@ -593,14 +594,25 @@ static void apu_write_dmc_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
-FamResult fam_apu_init(FamApu** out_apu, uint8_t region) {
-    if (out_apu == NULL || region > FAM_REGION_PAL) {
+size_t fam_apu_get_memory_required(void) {
+    return sizeof(FamApu);
+}
+
+size_t fam_apu_get_memory_alignment(void) {
+    return alignof(FamApu);
+}
+
+FamResult fam_apu_init(FamApu** out_apu, void* memory, FamRegion region) {
+    if (out_apu == NULL || memory == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
-    FamApu* apu = (FamApu*)calloc(1, sizeof(FamApu));
-    if (apu == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+
+    if (region > FAM_REGION_PAL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
+
+    FamApu* apu = (FamApu*)memory;
+    memset(apu, 0, sizeof(FamApu));
 
     apu->region = region;
 
@@ -612,13 +624,16 @@ FamResult fam_apu_init(FamApu** out_apu, uint8_t region) {
     return FAM_SUCCESS;
 }
 
-void fam_apu_free(FamApu* apu) {
-    if (apu == NULL) return;
+void fam_apu_shutdown(FamApu* apu) {
+    if (apu == NULL) {
+        return;
+    }
 
-    free(apu);
+    apu->dmc.reader = NULL;
+    apu->dmc.reader_data = NULL;
 }
 
-uint8_t fam_apu_get_region(const FamApu* apu) {
+FamRegion fam_apu_get_region(const FamApu* apu) {
     return apu->region;
 }
 
