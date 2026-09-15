@@ -159,14 +159,21 @@ int main(int argc, char **argv) {
     }
 
     FamApu* apu;
-    err = fam_apu_init(&apu, fam_music_get_region(music));
+    const FamApuConfig apu_config = {
+        .region = fam_music_get_region(music)
+    };
+    err = fam_apu_init(&apu, &apu_config);
     if (err != FAM_SUCCESS) {
         printf("Initializing APU failed with error code %d\n", err);
         return 1;
     }
 
     FamPlayer* player;
-    err = fam_player_init(&player, apu, SAMPLE_RATE, FAM_AUDIO_F32);
+    const FamPlayerConfig player_config = {
+        .sample_rate = SAMPLE_RATE,
+        .format = FAM_AUDIO_F32
+    };
+    err = fam_player_init(&player, apu, &player_config);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;

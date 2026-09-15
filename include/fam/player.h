@@ -7,11 +7,16 @@ typedef struct FamMusic FamMusic;
 typedef struct FamSfx FamSfx;
 typedef struct FamPlayer FamPlayer;
 
+typedef struct FamPlayerConfig {
+    uint32_t sample_rate;
+    FamAudioFormat format;
+} FamPlayerConfig;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-FAM_API FamResult FAM_CALL fam_player_init(FamPlayer** out_player, FamApu* apu, uint32_t sample_rate, uint8_t format);
+FAM_API FamResult FAM_CALL fam_player_init(FamPlayer** out_player, FamApu* apu, const FamPlayerConfig* config);
 FAM_API void FAM_CALL fam_player_free(FamPlayer* player);
 FAM_API FamResult FAM_CALL fam_player_process_samples(FamPlayer* player, int count, void* out_samples);
 

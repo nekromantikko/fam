@@ -597,7 +597,10 @@ static void test_dmc(void) {
 }
 
 void setUp(void) {
-    fam_apu_init(&apu, FAM_REGION_NTSC);
+    const FamApuConfig config = {
+        .region = FAM_REGION_NTSC
+    };
+    fam_apu_init(&apu, &config);
 }
 
 void tearDown(void) {
