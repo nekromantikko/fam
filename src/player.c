@@ -1,8 +1,8 @@
 ﻿#include <fam/player.h>
 #include <fam/apu.h>
 #include <fam/internal/stream_types.h>
-#include <stdlib.h>
 #include <string.h>
+#include <stdalign.h>
 
 struct FamPlayer {
     FamApu* apu;
@@ -348,8 +348,8 @@ static void player_process_frame(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, const FamPlayerConfig* config) {
-    if (out_player == NULL || apu == NULL || config == NULL) {
+FamResult fam_player_get_memory_required(const FamPlayerConfig* config, size_t* out_size) {
+    if (out_size == NULL || config == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -362,10 +362,25 @@ FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, const FamPlayerCo
         return FAM_ERROR_UNSUPPORTED_FEATURE;
     }
 
-    FamPlayer* player = (FamPlayer*)calloc(1, sizeof(FamPlayer));
-    if (player == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+    *out_size = sizeof(FamPlayer);
+    return FAM_SUCCESS;
+}
+
+size_t fam_player_get_memory_alignment(void) {
+    return alignof(FamPlayer);
+}
+
+FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, const FamPlayerConfig* config) {
+    if (out_player == NULL || apu == NULL || memory == NULL || config == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
+
+    if (config->sample_rate == 0) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    FamPlayer* player = (FamPlayer*)memory;
+    memset(player, 0, sizeof(FamPlayer));
 
     player->apu = apu;
     player->sample_rate = config->sample_rate;
@@ -384,8 +399,15 @@ FamResult fam_player_init(FamPlayer** out_player, FamApu* apu, const FamPlayerCo
     return FAM_SUCCESS;
 }
 
-void fam_player_free(FamPlayer* player) {
-    free(player);
+void fam_player_shutdown(FamPlayer* player) {
+    if (player == NULL) {
+        return;
+    }
+
+    if (player->apu != NULL) {
+        fam_apu_set_dmc_reader(player->apu, NULL, NULL);
+        player->apu = NULL;
+    }
 }
 
 FamResult fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {

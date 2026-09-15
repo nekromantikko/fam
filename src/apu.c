@@ -1,5 +1,6 @@
 #include <fam/apu.h>
-#include <stdlib.h>
+#include <string.h>
+#include <stdalign.h>
 
 typedef enum {
     QUARTER_FRAME_CLOCK = 0,
@@ -593,14 +594,34 @@ static void apu_write_dmc_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
-FamResult fam_apu_init(FamApu** out_apu, const FamApuConfig* config) {
-    if (out_apu == NULL || config == NULL || config->region > FAM_REGION_PAL) {
+FamResult fam_apu_get_memory_required(const FamApuConfig* config, size_t* out_size) {
+    if (out_size == NULL || config == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
-    FamApu* apu = (FamApu*)calloc(1, sizeof(FamApu));
-    if (apu == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+
+    if (config->region > FAM_REGION_PAL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
+
+    *out_size = sizeof(FamApu);
+    return FAM_SUCCESS;
+}
+
+size_t fam_apu_get_memory_alignment(void) {
+    return alignof(FamApu);
+}
+
+FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* config) {
+    if (out_apu == NULL || memory == NULL || config == NULL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (config->region > FAM_REGION_PAL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    FamApu* apu = (FamApu*)memory;
+    memset(apu, 0, sizeof(FamApu));
 
     apu->region = config->region;
 
@@ -612,10 +633,13 @@ FamResult fam_apu_init(FamApu** out_apu, const FamApuConfig* config) {
     return FAM_SUCCESS;
 }
 
-void fam_apu_free(FamApu* apu) {
-    if (apu == NULL) return;
+void fam_apu_shutdown(FamApu* apu) {
+    if (apu == NULL) {
+        return;
+    }
 
-    free(apu);
+    apu->dmc.reader = NULL;
+    apu->dmc.reader_data = NULL;
 }
 
 FamRegion fam_apu_get_region(const FamApu* apu) {

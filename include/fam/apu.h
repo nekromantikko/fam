@@ -2,6 +2,7 @@
 #include <fam/common.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef struct FamApu FamApu;
 typedef uint8_t (*FamDmcReadFn)(void* user_data, uint16_t addr);
@@ -44,8 +45,10 @@ typedef struct FamApuConfig {
 extern "C" {
 #endif
 
-FAM_API FamResult FAM_CALL fam_apu_init(FamApu** out_apu, const FamApuConfig* config);
-FAM_API void FAM_CALL fam_apu_free(FamApu* apu);
+FAM_API FamResult FAM_CALL fam_apu_get_memory_required(const FamApuConfig* config, size_t* out_size);
+FAM_API size_t FAM_CALL fam_apu_get_memory_alignment(void);
+FAM_API FamResult FAM_CALL fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* config);
+FAM_API void FAM_CALL fam_apu_shutdown(FamApu* apu);
 FAM_API FamRegion FAM_CALL fam_apu_get_region(const FamApu* apu);
 FAM_API FamResult FAM_CALL fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FAM_API FamResult FAM_CALL fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
