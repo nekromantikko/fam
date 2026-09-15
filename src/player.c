@@ -1,4 +1,4 @@
-﻿#include <fam/player.h>
+#include <fam/player.h>
 #include <fam/apu.h>
 #include <fam/internal/stream_types.h>
 #include <string.h>
