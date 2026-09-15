@@ -7,7 +7,9 @@
 
 #include <unity.h>
 #include <fam/apu.h>
+#include <stdlib.h>
 
+static void* apu_memory;
 static FamApu *apu;
 
 static void clockslide_apu(int apu_cycles) {
@@ -597,11 +599,14 @@ static void test_dmc(void) {
 }
 
 void setUp(void) {
-    fam_apu_init(&apu, FAM_REGION_NTSC);
+    size_t memory_size = fam_apu_get_memory_required();
+    apu_memory = malloc(memory_size);
+    fam_apu_init(&apu, apu_memory, FAM_REGION_NTSC);
 }
 
 void tearDown(void) {
-    fam_apu_free(apu);
+    fam_apu_shutdown(apu);
+    free(apu_memory);
 }
 
 int main(void) {
