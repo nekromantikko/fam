@@ -69,7 +69,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
 
         switch(cmd.type) {
             case CMD_MUSIC_PLAY:
-                fam_player_play_music(player, (FamMusic*)cmd.ptr);
+                fam_player_play_music(player, (const FamMusic*)cmd.ptr);
                 break;
             case CMD_MUSIC_PAUSE:
                 fam_player_pause_music(player);
@@ -81,7 +81,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
                 fam_player_stop_music(player);
                 break;
             case CMD_SFX_PLAY:
-                fam_player_play_sfx(player, (FamSfx*)cmd.ptr);
+                fam_player_play_sfx(player, (const FamSfx*)cmd.ptr);
                 break;
             default:
                 break;
@@ -150,20 +150,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    size_t music_size;
-    FamResult err = fam_music_get_memory_required(file_size, file_data, &music_size);
+    const FamMusic* music;
+    FamResult err = fam_music_from_buffer(&music, file_size, file_data);
     if (err != FAM_SUCCESS) {
         printf("Loading '%s' failed with error code %d\n", argv[1], err);
         free(file_data);
-        return 1;
-    }
-
-    void* music_memory = malloc(music_size);
-    FamMusic* music;
-    err = fam_music_from_buffer(&music, music_memory, file_size, file_data);
-    free(file_data);
-    if (err != FAM_SUCCESS) {
-        printf("Loading '%s' failed with error code %d\n", argv[1], err);
         return 1;
     }
 
@@ -228,7 +219,7 @@ int main(int argc, char **argv) {
 
     free(player_memory);
     free(apu_memory);
-    free(music_memory);
+    free(file_data);
 
     return 0;
 }
