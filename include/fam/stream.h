@@ -10,14 +10,12 @@ typedef struct FamSfx FamSfx;
 extern "C" {
 #endif
 
-FAM_API FamResult FAM_CALL fam_music_get_memory_required(size_t buffer_size, const uint8_t* buffer, size_t* out_size);
-FAM_API size_t FAM_CALL fam_music_get_memory_alignment(void);
-FAM_API FamResult FAM_CALL fam_music_from_buffer(FamMusic** out_music, void* memory, size_t buffer_size, const uint8_t* buffer);
+// Music is loaded in place, so the buffer must stay alive for the lifetime of the music track and not modified afterwards
+FAM_API FamResult FAM_CALL fam_music_from_buffer(const FamMusic** out_music, size_t buffer_size, const void* buffer);
 FAM_API FamRegion FAM_CALL fam_music_get_region(const FamMusic* music);
 
-FAM_API FamResult FAM_CALL fam_sfx_get_memory_required(size_t buffer_size, const uint8_t* buffer, size_t* out_size);
-FAM_API size_t FAM_CALL fam_sfx_get_memory_alignment(void);
-FAM_API FamResult FAM_CALL fam_sfx_from_buffer(FamSfx** out_sfx, void* memory, size_t buffer_size, const uint8_t* buffer);
+// See above comment
+FAM_API FamResult FAM_CALL fam_sfx_from_buffer(const FamSfx** out_sfx, size_t buffer_size, const void* buffer);
 FAM_API FamRegion FAM_CALL fam_sfx_get_region(const FamSfx* sfx);
 
 #ifdef __cplusplus
