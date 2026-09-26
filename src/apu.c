@@ -1,16 +1,39 @@
 #include <fam/apu.h>
-#include <stdlib.h>
+#include <string.h>
+#include <stdalign.h>
 
-#define NES_CPU_FREQ_NTSC 1789773
-#define NES_CPU_FREQ_PAL 1662607
-#define NES_CPU_CYCLES_PER_FRAME_NTSC 29780.5 // 60.099 Hz
-#define NES_CPU_CYCLES_PER_FRAME_PAL 33247.5 // 50.007 Hz
+typedef enum {
+    QUARTER_FRAME_CLOCK = 0,
+    HALF_FRAME_CLOCK,
+    THREEQUARTERS_FRAME_CLOCK,
+    FRAME_CLOCK,
+    FRAME_CLOCK_MODE1,
 
-#define QUARTER_FRAME_CLOCK 3729
-#define HALF_FRAME_CLOCK 7457
-#define THREEQUARTERS_FRAME_CLOCK 11186
-#define FRAME_CLOCK 14915
-#define FRAME_CLOCK_MODE1 18641
+    FRAME_CLOCK_COUNT,
+} FrameSequencerStep;
+
+// Tables indexed by region
+static const double NES_CPU_FREQ[2] = { 1789773.0, 1662607.0 };
+static const double NES_CPU_CYCLES_PER_FRAME[2] = { 29780.5, 33247.5 }; // 60.099 Hz / 50.007 Hz
+// NOTE: Values are one more than written on Nesdev,
+// because my APU clock function increments the counter at the beginning, 
+// so at cycle 0 it's set to 1 immediately before comparing
+static const uint16_t FRAME_SEQ_CLOCK[2][FRAME_CLOCK_COUNT] = {
+    { 3729, 7457, 11186, 14915, 18641 }, // NTSC
+    { 4157, 8314, 12470, 16627, 20783 } // PAL
+};
+// NOTE: These noise period values are half what is written on Nesdev, 
+// because they're APU cycles instead of CPU cycles
+static const uint16_t NOISE_PERIOD[2][16] = {
+    { 2, 4, 8, 16, 32, 48, 64, 80, 101, 127, 190, 254, 381, 508, 1017, 2034 }, // NTSC
+    { 2, 4, 7, 15, 30, 44, 59, 74, 94, 118, 177, 236, 354, 472, 945, 1889 }    // PAL
+};
+
+static const uint16_t DMC_RATE[2][16] = {
+    { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 }, // NTSC
+    { 398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50 }   // PAL
+};
+
 
 static const uint8_t PULSE_SEQ[4] = {
     0b00000001,
@@ -30,59 +53,41 @@ static const uint8_t LENGTH_TABLE[32] = {
     192, 24, 72, 26, 16, 28, 32, 30
 };
 
-// NOTE: These noise period values are half what is written on Nesdev, 
-// because they're APU cycles instead of CPU cycles
-static const uint16_t NOISE_PERIOD_NTSC[16] = {
-    2, 4, 8, 16, 32, 48, 64, 80, 101, 127, 190, 254, 381, 508, 1017, 2034
-};
-
-static const uint16_t NOISE_PERIOD_PAL[16] = {
-    2, 4, 7, 15, 30, 44, 59, 74, 94, 118, 177, 236, 354, 472, 945, 1889
-};
-
-static const uint16_t DMC_RATE_NTSC[16] = {
-    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54
-};
-
-static const uint16_t DMC_RATE_PAL[16] = {
-    398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50
-};
-
 // Mixer output value tables
 static const float PULSE_MIX_TABLE[31] = {
-    0.000000, 0.011609, 0.022939, 0.034001, 0.044803, 0.055355, 0.065665, 0.075741, 
-    0.085591, 0.095224, 0.104645, 0.113862, 0.122882, 0.131710, 0.140353, 0.148816, 
-    0.157105, 0.165226, 0.173183, 0.180981, 0.188626, 0.196120, 0.203470, 0.210679, 
-    0.217751, 0.224689, 0.231499, 0.238182, 0.244744, 0.251186, 0.257513 
+    0.000000f, 0.011609f, 0.022939f, 0.034001f, 0.044803f, 0.055355f, 0.065665f, 0.075741f, 
+    0.085591f, 0.095224f, 0.104645f, 0.113862f, 0.122882f, 0.131710f, 0.140353f, 0.148816f, 
+    0.157105f, 0.165226f, 0.173183f, 0.180981f, 0.188626f, 0.196120f, 0.203470f, 0.210679f, 
+    0.217751f, 0.224689f, 0.231499f, 0.238182f, 0.244744f, 0.251186f, 0.257513f 
 };
 
 static const float TND_MIX_TABLE[203] = {
-    0.000000, 0.006700, 0.013345, 0.019936, 0.026474, 0.032959, 0.039393, 0.045775, 
-    0.052106, 0.058386, 0.064618, 0.070800, 0.076934, 0.083020, 0.089058, 0.095050, 
-    0.100996, 0.106896, 0.112751, 0.118561, 0.124327, 0.130049, 0.135728, 0.141365, 
-    0.146959, 0.152512, 0.158024, 0.163494, 0.168925, 0.174315, 0.179666, 0.184978, 
-    0.190252, 0.195487, 0.200684, 0.205845, 0.210968, 0.216054, 0.221105, 0.226120, 
-    0.231099, 0.236043, 0.240953, 0.245828, 0.250669, 0.255477, 0.260252, 0.264993, 
-    0.269702, 0.274379, 0.279024, 0.283638, 0.288220, 0.292771, 0.297292, 0.301782, 
-    0.306242, 0.310673, 0.315074, 0.319446, 0.323789, 0.328104, 0.332390, 0.336649, 
-    0.340879, 0.345083, 0.349259, 0.353408, 0.357530, 0.361626, 0.365696, 0.369740, 
-    0.373759, 0.377752, 0.381720, 0.385662, 0.389581, 0.393474, 0.397344, 0.401189, 
-    0.405011, 0.408809, 0.412584, 0.416335, 0.420064, 0.423770, 0.427454, 0.431115, 
-    0.434754, 0.438371, 0.441966, 0.445540, 0.449093, 0.452625, 0.456135, 0.459625, 
-    0.463094, 0.466543, 0.469972, 0.473380, 0.476769, 0.480138, 0.483488, 0.486818, 
-    0.490129, 0.493421, 0.496694, 0.499948, 0.503184, 0.506402, 0.509601, 0.512782, 
-    0.515946, 0.519091, 0.522219, 0.525330, 0.528423, 0.531499, 0.534558, 0.537601, 
-    0.540626, 0.543635, 0.546627, 0.549603, 0.552563, 0.555507, 0.558434, 0.561346, 
-    0.564242, 0.567123, 0.569988, 0.572838, 0.575673, 0.578493, 0.581298, 0.584088, 
-    0.586863, 0.589623, 0.592370, 0.595101, 0.597819, 0.600522, 0.603212, 0.605887, 
-    0.608549, 0.611197, 0.613831, 0.616452, 0.619059, 0.621653, 0.624234, 0.626802, 
-    0.629357, 0.631899, 0.634428, 0.636944, 0.639448, 0.641939, 0.644418, 0.646885, 
-    0.649339, 0.651781, 0.654212, 0.656630, 0.659036, 0.661431, 0.663813, 0.666185, 
-    0.668544, 0.670893, 0.673229, 0.675555, 0.677869, 0.680173, 0.682465, 0.684746, 
-    0.687017, 0.689276, 0.691525, 0.693763, 0.695991, 0.698208, 0.700415, 0.702611, 
-    0.704797, 0.706973, 0.709139, 0.711294, 0.713440, 0.715576, 0.717702, 0.719818, 
-    0.721924, 0.724021, 0.726108, 0.728186, 0.730254, 0.732313, 0.734362, 0.736402, 
-    0.738433, 0.740455, 0.742468, 
+    0.000000f, 0.006700f, 0.013345f, 0.019936f, 0.026474f, 0.032959f, 0.039393f, 0.045775f, 
+    0.052106f, 0.058386f, 0.064618f, 0.070800f, 0.076934f, 0.083020f, 0.089058f, 0.095050f, 
+    0.100996f, 0.106896f, 0.112751f, 0.118561f, 0.124327f, 0.130049f, 0.135728f, 0.141365f, 
+    0.146959f, 0.152512f, 0.158024f, 0.163494f, 0.168925f, 0.174315f, 0.179666f, 0.184978f, 
+    0.190252f, 0.195487f, 0.200684f, 0.205845f, 0.210968f, 0.216054f, 0.221105f, 0.226120f, 
+    0.231099f, 0.236043f, 0.240953f, 0.245828f, 0.250669f, 0.255477f, 0.260252f, 0.264993f, 
+    0.269702f, 0.274379f, 0.279024f, 0.283638f, 0.288220f, 0.292771f, 0.297292f, 0.301782f, 
+    0.306242f, 0.310673f, 0.315074f, 0.319446f, 0.323789f, 0.328104f, 0.332390f, 0.336649f, 
+    0.340879f, 0.345083f, 0.349259f, 0.353408f, 0.357530f, 0.361626f, 0.365696f, 0.369740f, 
+    0.373759f, 0.377752f, 0.381720f, 0.385662f, 0.389581f, 0.393474f, 0.397344f, 0.401189f, 
+    0.405011f, 0.408809f, 0.412584f, 0.416335f, 0.420064f, 0.423770f, 0.427454f, 0.431115f, 
+    0.434754f, 0.438371f, 0.441966f, 0.445540f, 0.449093f, 0.452625f, 0.456135f, 0.459625f, 
+    0.463094f, 0.466543f, 0.469972f, 0.473380f, 0.476769f, 0.480138f, 0.483488f, 0.486818f, 
+    0.490129f, 0.493421f, 0.496694f, 0.499948f, 0.503184f, 0.506402f, 0.509601f, 0.512782f, 
+    0.515946f, 0.519091f, 0.522219f, 0.525330f, 0.528423f, 0.531499f, 0.534558f, 0.537601f, 
+    0.540626f, 0.543635f, 0.546627f, 0.549603f, 0.552563f, 0.555507f, 0.558434f, 0.561346f, 
+    0.564242f, 0.567123f, 0.569988f, 0.572838f, 0.575673f, 0.578493f, 0.581298f, 0.584088f, 
+    0.586863f, 0.589623f, 0.592370f, 0.595101f, 0.597819f, 0.600522f, 0.603212f, 0.605887f, 
+    0.608549f, 0.611197f, 0.613831f, 0.616452f, 0.619059f, 0.621653f, 0.624234f, 0.626802f, 
+    0.629357f, 0.631899f, 0.634428f, 0.636944f, 0.639448f, 0.641939f, 0.644418f, 0.646885f, 
+    0.649339f, 0.651781f, 0.654212f, 0.656630f, 0.659036f, 0.661431f, 0.663813f, 0.666185f, 
+    0.668544f, 0.670893f, 0.673229f, 0.675555f, 0.677869f, 0.680173f, 0.682465f, 0.684746f, 
+    0.687017f, 0.689276f, 0.691525f, 0.693763f, 0.695991f, 0.698208f, 0.700415f, 0.702611f, 
+    0.704797f, 0.706973f, 0.709139f, 0.711294f, 0.713440f, 0.715576f, 0.717702f, 0.719818f, 
+    0.721924f, 0.724021f, 0.726108f, 0.728186f, 0.730254f, 0.732313f, 0.734362f, 0.736402f, 
+    0.738433f, 0.740455f, 0.742468f, 
 };
 
 typedef struct PulseChannel {
@@ -229,6 +234,7 @@ struct FamApu {
 
     uint8_t sequencer_mode : 1;
     uint8_t frame_interrupt_inhibit : 1;
+    uint8_t region : 1;
 
     int64_t clock_counter;
 };
@@ -349,7 +355,7 @@ static void noise_clock_length_counter(NoiseChannel* noise) {
     }
 }
 
-static void noise_clock_timer(NoiseChannel* noise) {
+static void noise_clock_timer(NoiseChannel* noise, uint8_t region) {
     if (noise->timer_counter > 0) {
         noise->timer_counter--;
     }
@@ -362,8 +368,7 @@ static void noise_clock_timer(NoiseChannel* noise) {
         noise->shift_register >>= 1;
         noise->shift_register |= (feedback_bit << 14);
 
-        // TODO: PAL support
-        noise->timer_counter = NOISE_PERIOD_NTSC[noise->period];
+        noise->timer_counter = NOISE_PERIOD[region][noise->period];
     }
 }
 
@@ -385,8 +390,8 @@ static bool dmc_try_fill_buffer(DPCMChannel* dmc) {
     bool interrupt = false;
     
     if (!dmc->buffer_filled && dmc->bytes_remaining != 0) {
-        // TODO: Accurate CPU stall? From nesdev:
-        // "The CPU is stalled for 1-4 CPU cycles to read a sample byte."
+        // NOTE: On real hardware, the CPU is stalled for 1-4 CPU cycles to read a sample byte
+        // There's no CPU in fam, so I'm not modeling this behaviour
 
         if (dmc->reader != NULL) {
             dmc->sample_buffer = dmc->reader(dmc->reader_data, dmc->current_address);
@@ -412,7 +417,7 @@ static bool dmc_try_fill_buffer(DPCMChannel* dmc) {
     return interrupt;
 }
 
-static bool dmc_clock_timer(DPCMChannel* dmc) {
+static bool dmc_clock_timer(DPCMChannel* dmc, uint8_t region) {
     bool interrupt = false;
 
     // NOTE: DMC ticks at CPU rate
@@ -453,8 +458,7 @@ static bool dmc_clock_timer(DPCMChannel* dmc) {
                 }
             }
 
-            // TODO: PAL support
-            dmc->timer_counter = DMC_RATE_NTSC[dmc->sample_rate];
+            dmc->timer_counter = DMC_RATE[region][dmc->sample_rate];
         }
     }
 
@@ -484,7 +488,6 @@ static void apu_clock_half_frame(FamApu* apu) {
 
 static void apu_clock_frame(FamApu* apu) {
     if (apu->sequencer_mode == 0 && !apu->frame_interrupt_inhibit) {
-        // TODO: Do we want to fire an actual mock interrupt? (As a callback?)
         apu->status.frame_interrupt = 1;
     }
     apu->clock_counter = 0;
@@ -591,28 +594,47 @@ static void apu_write_dmc_register(FamApu* apu, int offset, uint8_t data) {
     }
 }
 
-FamResult fam_apu_init(FamApu** out_apu) {
-    if (out_apu == NULL) {
+size_t fam_apu_get_memory_required(void) {
+    return sizeof(FamApu);
+}
+
+size_t fam_apu_get_memory_alignment(void) {
+    return alignof(FamApu);
+}
+
+FamResult fam_apu_init(FamApu** out_apu, void* memory, FamRegion region) {
+    if (out_apu == NULL || memory == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
-    FamApu* apu = (FamApu*)calloc(1, sizeof(FamApu));
-    if (apu == NULL) {
-        return FAM_ERROR_OUT_OF_MEMORY;
+
+    if (region > FAM_REGION_PAL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
     }
+
+    FamApu* apu = (FamApu*)memory;
+    memset(apu, 0, sizeof(FamApu));
+
+    apu->region = region;
 
     // TODO: Should these be in their own function?
     apu->noise.shift_register = 1;
-    // TODO: PAL support
-    apu->noise.timer_counter = NOISE_PERIOD_NTSC[0];
+    apu->noise.timer_counter = NOISE_PERIOD[region][0];
 
     *out_apu = apu;
     return FAM_SUCCESS;
 }
 
-void fam_apu_free(FamApu* apu) {
-    if (apu == NULL) return;
+void fam_apu_shutdown(FamApu* apu) {
+    if (apu == NULL) {
+        return;
+    }
 
-    free(apu);
+    apu->dmc.reader = NULL;
+    apu->dmc.reader_data = NULL;
+}
+
+FamRegion fam_apu_get_region(const FamApu* apu) {
+    return apu->region;
 }
 
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
@@ -683,6 +705,8 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             break;
         }
         case FAM_REGISTER_FRAME_COUNTER: {
+            // NOTE: On real hardware, there's a 3-4 cycle delay depending on when the write happened.
+            // There's no CPU emulation in fam, so I'm not modeling this behaviour
             apu->clock_counter = 0;
             apu->sequencer_mode = data >> 7;
             apu->frame_interrupt_inhibit = (data >> 6) & 1;
@@ -724,8 +748,9 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
         case FAM_REGISTER_NOISE_3:
             return FAM_ERROR_WRITE_ONLY;
         case FAM_REGISTER_STATUS: {
-            // Keep bit 5 as it was (Open bus approximation)
-            *out_data = (*out_data & 0b00100000) | (apu->raw_status_register & 0b11011111);
+            // NOTE: On real hardware, bit 5 is open bus.
+            // I'm not modeling open bus behaviour, so it's always zero
+            *out_data = apu->raw_status_register & 0b11011111;
             if (apu->pulse[0].length_counter == 0) *out_data &= 0b11111110;
             if (apu->pulse[1].length_counter == 0) *out_data &= 0b11111101;
             if (apu->triangle.length_counter == 0) *out_data &= 0b11111011;
@@ -751,15 +776,17 @@ void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data) {
 void fam_apu_clock(FamApu* apu) {
     apu->clock_counter++;
 
-    if (apu->clock_counter == QUARTER_FRAME_CLOCK) {
+
+    const uint16_t* frame_seq_clock = FRAME_SEQ_CLOCK[apu->region];
+    if (apu->clock_counter == frame_seq_clock[QUARTER_FRAME_CLOCK]) {
         apu_clock_quarter_frame(apu);
-    } else if (apu->clock_counter == HALF_FRAME_CLOCK) {
+    } else if (apu->clock_counter == frame_seq_clock[HALF_FRAME_CLOCK]) {
         apu_clock_quarter_frame(apu);
         apu_clock_half_frame(apu);
-    } else if (apu->clock_counter == THREEQUARTERS_FRAME_CLOCK) {
+    } else if (apu->clock_counter == frame_seq_clock[THREEQUARTERS_FRAME_CLOCK]) {
         apu_clock_quarter_frame(apu);
-    } else if ((apu->sequencer_mode == 0 && apu->clock_counter == FRAME_CLOCK) 
-        || (apu->sequencer_mode == 1 && apu->clock_counter == FRAME_CLOCK_MODE1)) {
+    } else if ((apu->sequencer_mode == 0 && apu->clock_counter == frame_seq_clock[FRAME_CLOCK]) 
+        || (apu->sequencer_mode == 1 && apu->clock_counter == frame_seq_clock[FRAME_CLOCK_MODE1])) {
         apu_clock_quarter_frame(apu);
         apu_clock_half_frame(apu);
         apu_clock_frame(apu);
@@ -768,11 +795,11 @@ void fam_apu_clock(FamApu* apu) {
     pulse_clock_timer(apu->pulse);
     pulse_clock_timer(apu->pulse + 1);
     triangle_clock_timer(&apu->triangle);
-    noise_clock_timer(&apu->noise);
-    apu->status.dmc_interrupt |= dmc_clock_timer(&apu->dmc);
+    noise_clock_timer(&apu->noise, apu->region);
+    apu->status.dmc_interrupt |= dmc_clock_timer(&apu->dmc, apu->region);
 }
 
-void fam_apu_get_sample(FamApu* apu, void* out_sample) {
+void fam_apu_get_sample(FamApu* apu, float* out_sample) {
     uint8_t pulse_sum = pulse_get_output(apu->pulse);
     pulse_sum += pulse_get_output(apu->pulse + 1);
     
@@ -787,17 +814,15 @@ void fam_apu_get_sample(FamApu* apu, void* out_sample) {
     float mix = pulse_out + tnd_out;
 
     // TODO: High pass filter
-
-    // TODO: Support other output formats
-    *(float*)out_sample = mix;
+    // It has to run per fam_apu_clock at the APU clock rate, not
+    // once per output sample like this function is currently called
+    *out_sample = mix;
 }
 
-double fam_apu_get_freq(FamApu* apu) {
-    // TODO: Add PAL support
-    return (double)NES_CPU_FREQ_NTSC / 2.0;
+double fam_apu_get_freq(const FamApu* apu) {
+    return NES_CPU_FREQ[apu->region] / 2.0;
 }
 
-double fam_apu_get_frame_cycles(FamApu* apu) {
-    // TODO: Add PAL support
-    return (double)NES_CPU_CYCLES_PER_FRAME_NTSC / 2.0;
+double fam_apu_get_frame_cycles(const FamApu* apu) {
+    return NES_CPU_CYCLES_PER_FRAME[apu->region] / 2.0;
 }

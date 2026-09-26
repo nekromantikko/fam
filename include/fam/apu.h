@@ -2,6 +2,7 @@
 #include <fam/common.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef struct FamApu FamApu;
 typedef uint8_t (*FamDmcReadFn)(void* user_data, uint16_t addr);
@@ -36,12 +37,24 @@ typedef enum {
     FAM_REGISTER_FRAME_COUNTER      = 0x4017
 } FamRegister;
 
-FamResult fam_apu_init(FamApu** out_apu);
-void fam_apu_free(FamApu* apu);
-FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
-FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
-void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
-void fam_apu_clock(FamApu* apu);
-void fam_apu_get_sample(FamApu* apu, void* out_sample);
-double fam_apu_get_freq(FamApu* apu);
-double fam_apu_get_frame_cycles(FamApu* apu);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+FAM_API size_t FAM_CALL fam_apu_get_memory_required(void);
+FAM_API size_t FAM_CALL fam_apu_get_memory_alignment(void);
+FAM_API FamResult FAM_CALL fam_apu_init(FamApu** out_apu, void* memory, FamRegion region);
+FAM_API void FAM_CALL fam_apu_shutdown(FamApu* apu);
+FAM_API FamRegion FAM_CALL fam_apu_get_region(const FamApu* apu);
+FAM_API FamResult FAM_CALL fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
+FAM_API FamResult FAM_CALL fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
+FAM_API void FAM_CALL fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
+FAM_API void FAM_CALL fam_apu_clock(FamApu* apu);
+// NOTE: The APU always outputs raw floats 0..1
+FAM_API void FAM_CALL fam_apu_get_sample(FamApu* apu, float* out_sample);
+FAM_API double FAM_CALL fam_apu_get_freq(const FamApu* apu);
+FAM_API double FAM_CALL fam_apu_get_frame_cycles(const FamApu* apu);
+
+#ifdef __cplusplus
+}
+#endif

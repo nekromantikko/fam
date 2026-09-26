@@ -69,7 +69,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
 
         switch(cmd.type) {
             case CMD_MUSIC_PLAY:
-                fam_player_play_music(player, (FamMusic*)cmd.ptr);
+                fam_player_play_music(player, (const FamMusic*)cmd.ptr);
                 break;
             case CMD_MUSIC_PAUSE:
                 fam_player_pause_music(player);
@@ -81,7 +81,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
                 fam_player_stop_music(player);
                 break;
             case CMD_SFX_PLAY:
-                fam_player_play_sfx(player, (FamSfx*)cmd.ptr);
+                fam_player_play_sfx(player, (const FamSfx*)cmd.ptr);
                 break;
             default:
                 break;
@@ -143,20 +143,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    FamApu* apu;
-    FamResult err = fam_apu_init(&apu);
-    if (err != FAM_SUCCESS) {
-        printf("Initializing APU failed with error code %d\n", err);
-        return 1;
-    }
-
-    FamPlayer* player;
-    err = fam_player_init(&player, apu, SAMPLE_RATE);
-    if (err != FAM_SUCCESS) {
-        printf("Initializing player failed with error code %d\n", err);
-        return 1;
-    }
-
     size_t file_size;
     uint8_t* file_data;
     if (!read_entire_file(argv[1], &file_size, &file_data)) {
@@ -164,11 +150,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    FamMusic* music;
-    err = fam_music_from_buffer(&music, file_size, file_data);
-    free(file_data);
+    const FamMusic* music;
+    FamResult err = fam_music_from_buffer(&music, file_size, file_data);
     if (err != FAM_SUCCESS) {
         printf("Loading '%s' failed with error code %d\n", argv[1], err);
+        free(file_data);
+        return 1;
+    }
+
+    size_t apu_size = fam_apu_get_memory_required();
+    void* apu_memory = malloc(apu_size);
+    FamApu* apu;
+    err = fam_apu_init(&apu, apu_memory, fam_music_get_region(music));
+    if (err != FAM_SUCCESS) {
+        printf("Initializing APU failed with error code %d\n", err);
+        return 1;
+    }
+
+    size_t player_size = fam_player_get_memory_required();
+    void* player_memory = malloc(player_size);
+    FamPlayer* player;
+    err = fam_player_init(&player, player_memory, apu, SAMPLE_RATE, FAM_AUDIO_F32);
+    if (err != FAM_SUCCESS) {
+        printf("Initializing player failed with error code %d\n", err);
         return 1;
     }
 
@@ -200,7 +204,7 @@ int main(int argc, char **argv) {
     }
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing %s...\n", argv[1]);
+    printf("Playing %s (%s)...\n", argv[1], fam_music_get_region(music) == FAM_REGION_PAL ? "PAL" : "NTSC");
     printf("Press Enter to quit.\n");
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
@@ -210,9 +214,12 @@ int main(int argc, char **argv) {
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
-    fam_music_free(music);
-    fam_player_free(player);
-    fam_apu_free(apu);
+    fam_player_shutdown(player);
+    fam_apu_shutdown(apu);
+
+    free(player_memory);
+    free(apu_memory);
+    free(file_data);
 
     return 0;
 }
