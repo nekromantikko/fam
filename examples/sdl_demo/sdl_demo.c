@@ -161,7 +161,7 @@ int main(int argc, char **argv) {
     size_t apu_size = fam_apu_get_memory_required();
     void* apu_memory = malloc(apu_size);
     FamApu* apu;
-    err = fam_apu_init(&apu, apu_memory, fam_music_get_region(music));
+    err = fam_apu_init(&apu, apu_memory, fam_music_get_region(music), SAMPLE_RATE);
     if (err != FAM_SUCCESS) {
         printf("Initializing APU failed with error code %d\n", err);
         return 1;
@@ -170,7 +170,7 @@ int main(int argc, char **argv) {
     size_t player_size = fam_player_get_memory_required();
     void* player_memory = malloc(player_size);
     FamPlayer* player;
-    err = fam_player_init(&player, player_memory, apu, SAMPLE_RATE, FAM_AUDIO_F32);
+    err = fam_player_init(&player, player_memory, apu, FAM_AUDIO_F32);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;
