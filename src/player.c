@@ -31,7 +31,6 @@ typedef struct SfxState {
 
 struct FamPlayer {
     FamApu* apu;
-    uint32_t sample_rate;
     uint8_t format;
 
     const FamMusic* music;
@@ -50,9 +49,13 @@ struct FamPlayer {
 
     uint8_t last_status_written;
 
-    double accumulator;
-    double cycle_counter;
+    uint64_t cycles_per_frame_fixed; // UQ32.32 fixed point
+    uint64_t cycles_to_next_frame_fixed; // UQ32.32 fixed point
 };
+
+// APU cycles per video frame, UQ32.32
+// Both are exact quarter-cycles (59561/4 NTSC, 66495/4 PAL), so the fixed-point form is lossless
+static const uint64_t CYCLES_PER_FRAME[2] = { 59561ull << 30, 66495ull << 30 }; // 60.099 Hz / 50.007 Hz
 
 static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_pulse1, 0, 4);
@@ -409,12 +412,8 @@ size_t fam_player_get_memory_alignment(void) {
     return alignof(FamPlayer);
 }
 
-FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, uint32_t sample_rate, FamAudioFormat format) {
+FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, FamAudioFormat format) {
     if (out_player == NULL || apu == NULL || memory == NULL) {
-        return FAM_ERROR_INVALID_ARGUMENT;
-    }
-
-    if (sample_rate == 0) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -422,8 +421,9 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, uin
     memset(player, 0, sizeof(FamPlayer));
 
     player->apu = apu;
-    player->sample_rate = sample_rate;
     player->format = format;
+
+    player->cycles_per_frame_fixed = CYCLES_PER_FRAME[fam_apu_get_region(apu)]; 
 
     memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
 
@@ -450,36 +450,31 @@ void fam_player_shutdown(FamPlayer* player) {
 }
 
 FamResult fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
+    if (player == NULL || out_samples == NULL || sample_count < 0) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
     if (sample_count == 0) {
         return FAM_SUCCESS;
     }
 
-    if (player == NULL || out_samples == NULL) {
-        return FAM_ERROR_INVALID_ARGUMENT;
-    }
-
     // NOTE: Only float output supported atm
     float* samples = (float*)out_samples;
+    int samples_remaining = sample_count;
 
-    const double apu_period = 1.0 / fam_apu_get_freq(player->apu);
-    const double sample_time = 1.0 / (double)player->sample_rate;
-    const double frame_cycles = fam_apu_get_frame_cycles(player->apu);
-
-    for (int i = 0; i < sample_count; i++) {
-        player->accumulator += sample_time;
-        while (player->accumulator >= apu_period) {
-            fam_apu_clock(player->apu);
-            player->accumulator -= apu_period;
-            player->cycle_counter++;
-
-            if (player->cycle_counter >= frame_cycles) {
-                player_process_frame(player);
-                player->cycle_counter -= frame_cycles;
-            }
+    while (samples_remaining) {
+        int cycles_for_samples = fam_apu_get_cycles_for_samples(player->apu, samples_remaining);
+        int frame_cycles = (int)(player->cycles_to_next_frame_fixed >> 32);
+        int run_cycles = frame_cycles < cycles_for_samples ? frame_cycles : cycles_for_samples;
+        int processed = fam_apu_run(player->apu, run_cycles, samples + (sample_count - samples_remaining));
+        samples_remaining -= processed;
+        
+        player->cycles_to_next_frame_fixed -= (uint64_t)run_cycles << 32;
+        
+        if (player->cycles_to_next_frame_fixed < (1ull << 32)) {
+            player_process_frame(player);
+            player->cycles_to_next_frame_fixed += player->cycles_per_frame_fixed;
         }
-
-        // TODO: Average samples across multiple APU clocks to prevent aliasing
-        fam_apu_get_sample(player->apu, samples + i);
     }
 
     return FAM_SUCCESS;

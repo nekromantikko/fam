@@ -43,17 +43,18 @@ extern "C" {
 
 FAM_API size_t FAM_CALL fam_apu_get_memory_required(void);
 FAM_API size_t FAM_CALL fam_apu_get_memory_alignment(void);
-FAM_API FamResult FAM_CALL fam_apu_init(FamApu** out_apu, void* memory, FamRegion region);
+// NOTE: A resample rate of 0 means no resampling, samples are output at APU clock rate
+FAM_API FamResult FAM_CALL fam_apu_init(FamApu** out_apu, void* memory, FamRegion region, uint32_t resample_rate);
 FAM_API void FAM_CALL fam_apu_shutdown(FamApu* apu);
 FAM_API FamRegion FAM_CALL fam_apu_get_region(const FamApu* apu);
 FAM_API FamResult FAM_CALL fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FAM_API FamResult FAM_CALL fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
 FAM_API void FAM_CALL fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
-FAM_API void FAM_CALL fam_apu_clock(FamApu* apu);
-// NOTE: The APU always outputs raw floats 0..1
-FAM_API void FAM_CALL fam_apu_get_sample(FamApu* apu, float* out_sample);
-FAM_API double FAM_CALL fam_apu_get_freq(const FamApu* apu);
-FAM_API double FAM_CALL fam_apu_get_frame_cycles(const FamApu* apu);
+// NOTE: Caller is responsible for making sure out_samples has enough room
+// If out_samples is NULL, nothing is output
+FAM_API int FAM_CALL fam_apu_run(FamApu* apu, int cycles, float* out_samples);
+FAM_API double FAM_CALL fam_apu_get_clock_rate(const FamApu* apu);
+FAM_API int FAM_CALL fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count);
 
 #ifdef __cplusplus
 }
