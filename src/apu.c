@@ -750,6 +750,12 @@ FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* confi
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
+    // I don't do upsampling, and also apu_get_cycles_for_samples would break
+    // if sample_rate was larger than the clock rate
+    if (config->sample_rate != 0 && config->sample_rate >= CPU_CLOCK_RATE[config->region] / 2) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
     FamApu* apu = (FamApu*)memory;
     memset(apu, 0, sizeof(FamApu));
 
@@ -993,4 +999,9 @@ int fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count) {
     const uint64_t target = ((apu->delta_write_pos_fixed >> 32) + (uint64_t)sample_count) << 32;
     const uint64_t distance = target - apu->delta_write_pos_fixed;
     return (int)((distance + apu->delta_increment - 1) / apu->delta_increment);  // ceil
+}
+
+int fam_apu_get_samples_for_cycles(const FamApu* apu, int cycle_count) {
+    const uint64_t end = apu->delta_write_pos_fixed + (uint64_t)cycle_count * apu->delta_increment;
+    return (int)((end >> 32) - (apu->delta_write_pos_fixed >> 32));
 }

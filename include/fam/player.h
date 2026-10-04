@@ -14,6 +14,8 @@ extern "C" {
 
 FAM_API size_t FAM_CALL fam_player_get_memory_required(void);
 FAM_API size_t FAM_CALL fam_player_get_memory_alignment(void);
+// The player takes exclusive ownership of the APU
+// Once attached to a player, the APU shouldn't be driven directly
 FAM_API FamResult FAM_CALL fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu);
 FAM_API void FAM_CALL fam_player_shutdown(FamPlayer* player);
 FAM_API FamResult FAM_CALL fam_player_run(FamPlayer* player, int sample_count, void* out_samples);
