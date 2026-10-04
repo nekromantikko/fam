@@ -556,6 +556,16 @@ void fam_player_stop_music(FamPlayer* player) {
     player_update_status_register(player, false);
 }
 
+FamPlaybackState fam_player_get_music_state(const FamPlayer* player) {
+    assert(player != NULL);
+
+    if (player->music == NULL) {
+        return FAM_PLAYBACK_STOPPED;
+    }
+
+    return player->music_state.paused ? FAM_PLAYBACK_PAUSED : FAM_PLAYBACK_PLAYING;
+}
+
 FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
     assert(player != NULL);
     assert(sfx != NULL);

@@ -8,6 +8,12 @@ typedef struct FamMusic FamMusic;
 typedef struct FamSfx FamSfx;
 typedef struct FamPlayer FamPlayer;
 
+typedef enum {
+    FAM_PLAYBACK_STOPPED = 0,
+    FAM_PLAYBACK_PLAYING = 1,
+    FAM_PLAYBACK_PAUSED  = 2,
+} FamPlaybackState;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,6 +30,7 @@ FAM_API FamResult FAM_CALL fam_player_play_music(FamPlayer* player, const FamMus
 FAM_API void FAM_CALL fam_player_pause_music(FamPlayer* player);
 FAM_API void FAM_CALL fam_player_resume_music(FamPlayer* player);
 FAM_API void FAM_CALL fam_player_stop_music(FamPlayer* player);
+FAM_API FamPlaybackState FAM_CALL fam_player_get_music_state(const FamPlayer* player);
 FAM_API FamResult FAM_CALL fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx);
 
 #ifdef __cplusplus
