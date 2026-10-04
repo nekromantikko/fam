@@ -1,5 +1,6 @@
 #include <fam/stream.h>
 #include <fam/internal/stream.h>
+#include <assert.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -118,6 +119,7 @@ FamResult fam_music_from_buffer(const FamMusic** out_music, size_t buffer_size, 
 }
 
 FamRegion fam_music_get_region(const FamMusic* music) {
+    assert(music != NULL);
     return (FamRegion)((const uint8_t*)music)[STREAM_HEADER_FIELD_REGION];
 }
 
@@ -143,5 +145,6 @@ FamResult fam_sfx_from_buffer(const FamSfx** out_sfx, size_t buffer_size, const 
 }
 
 FamRegion fam_sfx_get_region(const FamSfx* sfx) {
+    assert(sfx != NULL);
     return (FamRegion)((const uint8_t*)sfx)[STREAM_HEADER_FIELD_REGION];
 }

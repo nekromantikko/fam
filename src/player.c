@@ -1,6 +1,7 @@
 #include <fam/player.h>
 #include <fam/apu.h>
 #include <fam/internal/stream.h>
+#include <assert.h>
 #include <string.h>
 #include <stdalign.h>
 
@@ -145,8 +146,9 @@ static void player_silence_music(FamPlayer* player) {
 
 static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
     FamPlayer* player = (FamPlayer*)user_data;
-    if (player == NULL || 
-        player->music == NULL ||
+    assert(player != NULL);
+
+    if (player->music == NULL ||
         player->music_state.current_dpcm_bank_data == NULL) {
         return 0;
     }
@@ -423,8 +425,6 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu) {
 
     player->cycles_per_frame_fixed = CYCLES_PER_FRAME[fam_apu_get_region(apu)]; 
 
-    memset((void*)player->sfx, 0, sizeof(FamSfx*) * SFX_CHANNEL_COUNT);
-
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
     // 4-step sequence, disable IRQ
     fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x40);
@@ -437,9 +437,7 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu) {
 }
 
 void fam_player_shutdown(FamPlayer* player) {
-    if (player == NULL) {
-        return;
-    }
+    assert(player != NULL);
 
     if (player->apu != NULL) {
         fam_apu_set_dmc_reader(player->apu, NULL, NULL);
@@ -447,13 +445,13 @@ void fam_player_shutdown(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_run(FamPlayer* player, int sample_count, void* out_samples) {
-    if (player == NULL || out_samples == NULL || sample_count < 0) {
-        return FAM_ERROR_INVALID_ARGUMENT;
-    }
+void fam_player_run(FamPlayer* player, int sample_count, void* out_samples) {
+    assert(player != NULL);
+    assert(out_samples != NULL);
+    assert(sample_count >= 0);
 
     if (sample_count == 0) {
-        return FAM_SUCCESS;
+        return;
     }
 
     int samples_remaining = sample_count;
@@ -474,14 +472,11 @@ FamResult fam_player_run(FamPlayer* player, int sample_count, void* out_samples)
             player->cycles_to_next_frame_fixed += player->cycles_per_frame_fixed;
         }
     }
-
-    return FAM_SUCCESS;
 }
 
 FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
-    if (player == NULL || music == NULL) {
-        return FAM_ERROR_INVALID_ARGUMENT;
-    }
+    assert(player != NULL);
+    assert(music != NULL);
 
     const StreamInfo info = stream_get_info((const uint8_t*)music);
 
@@ -522,9 +517,7 @@ FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
 }
 
 void fam_player_pause_music(FamPlayer* player) {
-    if (player == NULL) {
-        return;
-    }
+    assert(player != NULL);
 
     if (player->music == NULL || player->music_state.paused) {
         return;  
@@ -535,9 +528,7 @@ void fam_player_pause_music(FamPlayer* player) {
 }
 
 void fam_player_resume_music(FamPlayer* player) {
-    if (player == NULL) {
-        return;
-    }
+    assert(player != NULL);
 
     if (player->music == NULL || !player->music_state.paused) {
         return;
@@ -553,9 +544,7 @@ void fam_player_resume_music(FamPlayer* player) {
 }
 
 void fam_player_stop_music(FamPlayer* player) {
-    if (player == NULL) {
-        return;
-    }
+    assert(player != NULL);
 
     if (player->music == NULL) {
         return;
@@ -568,9 +557,8 @@ void fam_player_stop_music(FamPlayer* player) {
 }
 
 FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
-    if (player == NULL || sfx == NULL) {
-        return FAM_ERROR_INVALID_ARGUMENT;
-    }
+    assert(player != NULL);
+    assert(sfx != NULL);
 
     const StreamInfo info = stream_get_info((const uint8_t*)sfx);
 

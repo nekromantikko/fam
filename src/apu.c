@@ -1,7 +1,7 @@
 #include <fam/apu.h>
+#include <assert.h>
 #include <string.h>
 #include <stdalign.h>
-#include <assert.h>
 
 #define DELTA_BUFFER_SIZE 256
 #define BLEP_KERNEL_WIDTH 16
@@ -737,7 +737,7 @@ size_t fam_apu_get_memory_alignment(void) {
 }
 
 FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* config) {
-    if (out_apu == NULL || memory == NULL) {
+    if (out_apu == NULL || memory == NULL || config == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -790,19 +790,20 @@ FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* confi
 }
 
 void fam_apu_shutdown(FamApu* apu) {
-    if (apu == NULL) {
-        return;
-    }
+    assert(apu != NULL);
 
     apu->dmc.reader = NULL;
     apu->dmc.reader_data = NULL;
 }
 
 FamRegion fam_apu_get_region(const FamApu* apu) {
+    assert(apu != NULL);
     return apu->region;
 }
 
 FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
+    assert(apu != NULL);
+
     switch (reg) {
         case FAM_REGISTER_PULSE1_0:
         case FAM_REGISTER_PULSE1_1:
@@ -894,6 +895,9 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
 }
 
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
+    assert(apu != NULL);
+    assert(out_data != NULL);
+
     switch (reg) {
         case FAM_REGISTER_PULSE1_0:
         case FAM_REGISTER_PULSE1_1:
@@ -935,11 +939,18 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
 }
 
 void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data) {
+    // A NULL reader is valid, it unsets the current one
+    assert(apu != NULL);
+
     apu->dmc.reader = reader;
     apu->dmc.reader_data = user_data;
 }
 
 int fam_apu_run(FamApu* apu, int cycles, void* out_samples) {
+    // A NULL out_samples is valid, it means produce no output
+    assert(apu != NULL);
+    assert(cycles >= 0);
+
     uint32_t samples_processed = 0;
 
     // TODO: Other output formats
@@ -985,10 +996,13 @@ int fam_apu_run(FamApu* apu, int cycles, void* out_samples) {
 }
 
 double fam_apu_get_clock_rate(const FamApu* apu) {
+    assert(apu != NULL);
     return (double)CPU_CLOCK_RATE[apu->region] / 2.0;
 }
 
 size_t fam_apu_get_sample_size(const FamApu* apu) {
+    assert(apu != NULL);
+
     // TODO: Other output formats
     if (apu->format == FAM_AUDIO_F32) {
         return sizeof(float);
@@ -997,12 +1011,18 @@ size_t fam_apu_get_sample_size(const FamApu* apu) {
 }
 
 int fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count) {
+    assert(apu != NULL);
+    assert(sample_count >= 0);
+
     const uint64_t target = ((apu->delta_write_pos_fixed >> 32) + (uint64_t)sample_count) << 32;
     const uint64_t distance = target - apu->delta_write_pos_fixed;
     return (int)((distance + apu->delta_increment - 1) / apu->delta_increment);  // ceil
 }
 
 int fam_apu_get_samples_for_cycles(const FamApu* apu, int cycle_count) {
+    assert(apu != NULL);
+    assert(cycle_count >= 0);
+
     const uint64_t end = apu->delta_write_pos_fixed + (uint64_t)cycle_count * apu->delta_increment;
     return (int)((end >> 32) - (apu->delta_write_pos_fixed >> 32));
 }
