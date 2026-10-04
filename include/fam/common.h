@@ -20,6 +20,14 @@
     #define FAM_CALL
 #endif
 
+// fam validates untrusted input at the trust boundary only. fam_music_from_buffer,
+// fam_sfx_from_buffer, fam_apu_init and fam_player_init check their arguments and report
+// through FamResult, because that data comes from outside the library and the caller
+// cannot know in advance that it is good.
+//
+// Everything past that boundary takes handles fam produced itself. A NULL handle or an
+// out-of-range count there is a caller bug, not a runtime condition, so it is caught by
+// assert in debug builds and costs nothing when NDEBUG is defined.
 typedef enum {
     FAM_SUCCESS                     = 0,
     FAM_ERROR_UNIMPLEMENTED         = -1,
