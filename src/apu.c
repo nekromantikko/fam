@@ -925,6 +925,7 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
             break;
         }
         case FAM_REGISTER_FRAME_COUNTER:
+            // NOTE: On real hadrware, $4017 read is controller port 2
             return FAM_ERROR_WRITE_ONLY;
         default:
             return FAM_ERROR_INVALID_ARGUMENT;
