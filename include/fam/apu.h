@@ -54,6 +54,8 @@ FAM_API FamResult FAM_CALL fam_apu_init(FamApu** out_apu, void* memory, const Fa
 FAM_API void FAM_CALL fam_apu_shutdown(FamApu* apu);
 FAM_API FamRegion FAM_CALL fam_apu_get_region(const FamApu* apu);
 FAM_API FamResult FAM_CALL fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
+// Reading a write-only register returns FAM_ERROR_WRITE_ONLY
+// On real hardware, these reads return open bus, which fam doesn't model
 FAM_API FamResult FAM_CALL fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
 FAM_API void FAM_CALL fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
 // Writes one sample per output period elapsed and returns the count. Running exactly
