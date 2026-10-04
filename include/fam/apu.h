@@ -56,12 +56,15 @@ FAM_API FamRegion FAM_CALL fam_apu_get_region(const FamApu* apu);
 FAM_API FamResult FAM_CALL fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data);
 FAM_API FamResult FAM_CALL fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
 FAM_API void FAM_CALL fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
-// NOTE: Caller is responsible for making sure out_samples has enough room
+// Writes one sample per output period elapsed and returns the count. Running exactly
+// fam_apu_get_cycles_for_samples(apu, n) cycles writes exactly n samples. For any other
+// cycle count, size the buffer with fam_apu_get_samples_for_cycles.
 // If out_samples is NULL, nothing is output
 FAM_API int FAM_CALL fam_apu_run(FamApu* apu, int cycles, void* out_samples);
 FAM_API double FAM_CALL fam_apu_get_clock_rate(const FamApu* apu);
 FAM_API size_t FAM_CALL fam_apu_get_sample_size(const FamApu* apu);
 FAM_API int FAM_CALL fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count);
+FAM_API int FAM_CALL fam_apu_get_samples_for_cycles(const FamApu* apu, int cycle_count);
 
 #ifdef __cplusplus
 }
