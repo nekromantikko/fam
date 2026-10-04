@@ -7,6 +7,7 @@
 #define SAMPLE_RATE 44100
 #define CMD_BUFFER_CAPACITY 256 // NOTE: Must be power of 2!
 #define MAX_CMD_PER_CALLBACK 16
+#define CHUNK_SAMPLES 512 // Render buffer, 2 kB of stack
 
 typedef enum {
     CMD_MUSIC_PLAY,
@@ -94,11 +95,14 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
 
     process_player_commands(callback_data->player, callback_data->cmd_buffer);
 
-    int num_samples = additional_amount / sizeof(float);
-    for (int i = 0; i < num_samples; i++) {
-        static float sample;
-        fam_player_run(callback_data->player, 1, &sample);
-        SDL_PutAudioStreamData(stream, &sample, sizeof(float));
+    float chunk[CHUNK_SAMPLES];
+    int samples_remaining = additional_amount / (int)sizeof(float);
+
+    while (samples_remaining > 0) {
+        const int count = samples_remaining < CHUNK_SAMPLES ? samples_remaining : CHUNK_SAMPLES;
+        fam_player_run(callback_data->player, count, chunk);
+        SDL_PutAudioStreamData(stream, chunk, count * (int)sizeof(float));
+        samples_remaining -= count;
     }
 }
 
