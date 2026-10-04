@@ -595,7 +595,12 @@ static void test_dmc(void) {
 void setUp(void) {
     size_t memory_size = fam_apu_get_memory_required();
     apu_memory = malloc(memory_size);
-    fam_apu_init(&apu, apu_memory, FAM_REGION_NTSC, 0);
+    FamApuConfig config = {
+        .region = FAM_REGION_NTSC,
+        .sample_rate = 0,
+        .format = FAM_AUDIO_F32
+    };
+    fam_apu_init(&apu, apu_memory, &config);
 }
 
 void tearDown(void) {

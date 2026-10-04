@@ -97,7 +97,7 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
     int num_samples = additional_amount / sizeof(float);
     for (int i = 0; i < num_samples; i++) {
         static float sample;
-        fam_player_process_samples(callback_data->player, 1, &sample);
+        fam_player_run(callback_data->player, 1, &sample);
         SDL_PutAudioStreamData(stream, &sample, sizeof(float));
     }
 }
@@ -160,8 +160,13 @@ int main(int argc, char **argv) {
 
     size_t apu_size = fam_apu_get_memory_required();
     void* apu_memory = malloc(apu_size);
+    FamApuConfig apu_config = {
+        .region = fam_music_get_region(music),
+        .sample_rate = SAMPLE_RATE,
+        .format = FAM_AUDIO_F32
+    };
     FamApu* apu;
-    err = fam_apu_init(&apu, apu_memory, fam_music_get_region(music), SAMPLE_RATE);
+    err = fam_apu_init(&apu, apu_memory, &apu_config);
     if (err != FAM_SUCCESS) {
         printf("Initializing APU failed with error code %d\n", err);
         return 1;
@@ -170,7 +175,7 @@ int main(int argc, char **argv) {
     size_t player_size = fam_player_get_memory_required();
     void* player_memory = malloc(player_size);
     FamPlayer* player;
-    err = fam_player_init(&player, player_memory, apu, FAM_AUDIO_F32);
+    err = fam_player_init(&player, player_memory, apu);
     if (err != FAM_SUCCESS) {
         printf("Initializing player failed with error code %d\n", err);
         return 1;

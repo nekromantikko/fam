@@ -281,12 +281,13 @@ struct FamApu {
     uint8_t sequencer_mode : 1;
     uint8_t frame_interrupt_inhibit : 1;
 
+    uint8_t format;
     uint8_t region;
 
     int64_t clock_counter;
 
     // Resampling
-    uint32_t resample_rate;
+    uint32_t sample_rate;
     float last_mix;
 
     float delta_buffer[DELTA_BUFFER_SIZE + BLEP_KERNEL_WIDTH];
@@ -735,24 +736,30 @@ size_t fam_apu_get_memory_alignment(void) {
     return alignof(FamApu);
 }
 
-FamResult fam_apu_init(FamApu** out_apu, void* memory, FamRegion region, uint32_t resample_rate) {
+FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* config) {
     if (out_apu == NULL || memory == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
-    if (region > FAM_REGION_PAL) {
+    if (config->region > FAM_REGION_PAL) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    // TODO: Other output formats
+    if (config->format > FAM_AUDIO_F32) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     FamApu* apu = (FamApu*)memory;
     memset(apu, 0, sizeof(FamApu));
 
-    apu->region = region;
-    apu->resample_rate = resample_rate;
+    apu->region = config->region;
+    apu->format = config->format;
+    apu->sample_rate = config->sample_rate;
 
     // TODO: Should these be in their own function?
     apu->noise.shift_register = 1;
-    apu->noise.timer_counter = NOISE_PERIOD[region][0];
+    apu->noise.timer_counter = NOISE_PERIOD[apu->region][0];
 
     float initial_mix = apu_mix(apu);
     apu->last_mix = initial_mix;
@@ -760,16 +767,16 @@ FamResult fam_apu_init(FamApu** out_apu, void* memory, FamRegion region, uint32_
 
     // a = fs / (fs + 2*pi*fc), the standard first-order RC high-pass
     static const double pi = 3.141592653589793;
-    const double output_rate = resample_rate ? (double)resample_rate : (double)CPU_CLOCK_RATE[region] / 2.0;
+    const double output_rate = apu->sample_rate ? (double)apu->sample_rate : (double)CPU_CLOCK_RATE[apu->region] / 2.0;
     apu->dc_block_coeff = (float)(output_rate / (output_rate + 2 * pi * DC_BLOCK_CUTOFF_HZ));
     apu->dc_block_x_prev = initial_mix;
 
-    if (resample_rate == 0) {
+    if (apu->sample_rate == 0) {
         apu->delta_increment = 1ull << 32;
     } else {
         // Shifting left by 33 -> 32 fractional bits and an additional shift to double it, 
         // because I divide by the CPU clock rate which is double the APU clock rate
-        apu->delta_increment = ((uint64_t)resample_rate << 33) / CPU_CLOCK_RATE[region];
+        apu->delta_increment = ((uint64_t)apu->sample_rate << 33) / CPU_CLOCK_RATE[apu->region];
     }
 
     *out_apu = apu;
@@ -925,15 +932,18 @@ void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data) {
     apu->dmc.reader_data = user_data;
 }
 
-int fam_apu_run(FamApu* apu, int cycles, float* out_samples) {
+int fam_apu_run(FamApu* apu, int cycles, void* out_samples) {
     uint32_t samples_processed = 0;
+
+    // TODO: Other output formats
+    float* samples_float = (float*)out_samples;
 
     for (int i = 0; i < cycles; i++) {
         uint64_t next_delta_write_pos = apu->delta_write_pos_fixed + apu->delta_increment;
         // Roll delta buffer if needed
         if (next_delta_write_pos >= (uint64_t)DELTA_BUFFER_SIZE << 32) {
             samples_processed += apu_drain_samples(apu, DELTA_BUFFER_SIZE - apu->delta_read_pos, 
-                out_samples ? out_samples + samples_processed : NULL);
+                out_samples ? samples_float + samples_processed : NULL);
             apu->delta_read_pos = 0;
             
             // Move BLEP kernel tail to front
@@ -963,12 +973,20 @@ int fam_apu_run(FamApu* apu, int cycles, float* out_samples) {
     }
 
     samples_processed += apu_drain_samples(apu, (apu->delta_write_pos_fixed >> 32) - apu->delta_read_pos, 
-        out_samples ? out_samples + samples_processed : NULL);
+        out_samples ? samples_float + samples_processed : NULL);
     return samples_processed;
 }
 
 double fam_apu_get_clock_rate(const FamApu* apu) {
     return (double)CPU_CLOCK_RATE[apu->region] / 2.0;
+}
+
+size_t fam_apu_get_sample_size(const FamApu* apu) {
+    // TODO: Other output formats
+    if (apu->format == FAM_AUDIO_F32) {
+        return sizeof(float);
+    }
+    return 0;
 }
 
 int fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count) {
