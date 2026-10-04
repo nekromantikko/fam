@@ -31,7 +31,6 @@ typedef struct SfxState {
 
 struct FamPlayer {
     FamApu* apu;
-    uint8_t format;
 
     const FamMusic* music;
     MusicState music_state;
@@ -412,7 +411,7 @@ size_t fam_player_get_memory_alignment(void) {
     return alignof(FamPlayer);
 }
 
-FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, FamAudioFormat format) {
+FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu) {
     if (out_player == NULL || apu == NULL || memory == NULL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
@@ -421,7 +420,6 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu, Fam
     memset(player, 0, sizeof(FamPlayer));
 
     player->apu = apu;
-    player->format = format;
 
     player->cycles_per_frame_fixed = CYCLES_PER_FRAME[fam_apu_get_region(apu)]; 
 
@@ -449,7 +447,7 @@ void fam_player_shutdown(FamPlayer* player) {
     }
 }
 
-FamResult fam_player_process_samples(FamPlayer* player, int sample_count, void* out_samples) {
+FamResult fam_player_run(FamPlayer* player, int sample_count, void* out_samples) {
     if (player == NULL || out_samples == NULL || sample_count < 0) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
@@ -458,15 +456,15 @@ FamResult fam_player_process_samples(FamPlayer* player, int sample_count, void* 
         return FAM_SUCCESS;
     }
 
-    // NOTE: Only float output supported atm
-    float* samples = (float*)out_samples;
     int samples_remaining = sample_count;
+    const size_t stride = fam_apu_get_sample_size(player->apu);
 
     while (samples_remaining) {
         int cycles_for_samples = fam_apu_get_cycles_for_samples(player->apu, samples_remaining);
         int frame_cycles = (int)(player->cycles_to_next_frame_fixed >> 32);
         int run_cycles = frame_cycles < cycles_for_samples ? frame_cycles : cycles_for_samples;
-        int processed = fam_apu_run(player->apu, run_cycles, samples + (sample_count - samples_remaining));
+        const size_t samples_offset = (sample_count - samples_remaining) * stride;
+        int processed = fam_apu_run(player->apu, run_cycles, (uint8_t*)out_samples + samples_offset);
         samples_remaining -= processed;
         
         player->cycles_to_next_frame_fixed -= (uint64_t)run_cycles << 32;
