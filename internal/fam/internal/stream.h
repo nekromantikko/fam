@@ -27,7 +27,42 @@
 //
 //  0x28-0x3F               reserved
 
-// Stream data consists of 2-byte operations, where the first byte is the opcode and the second byte is data
+// NOTE: channel_mask does not automatically enable the channels. They must be explicitly enabled with OP_STATUS_WRITE
+// However, enabling channels not declared by channel_mask is a no-op.
+// For sound effects, channel_mask must only contain one set bit (Sound effects play on single channels)
+// Sound effect writes to other channels are completely ignored.
+// For music, writes to other channels are NOT ignored, but there's no output if the channels are not enabled.
+
+// Stream data consists of 4-byte operations. 
+// For all opcodes except for OP_WAIT, it's in the form:
+// 0x00         u8          opcode
+// 0x01         u8          data
+// 0x02-0x03    u16         duration (-1, in APU cycles. A duration of 0 cannot be expressed, it's always at least 1)
+
+// The duration is effectively the delta to the next operation. So it's the amount of APU cycles to wait before the next operation is processed.
+// In the case of the last operation in the stream, the duration is ignored, unless it's a looping song, 
+// in which case the delta applies to the operation at music_loop_offset when the player jumps to it.
+// Because the value in the file is duration - 1, the effective range for the duration is [1, 65536]
+// This should be enough to express the waits between rows in tracker-authored streams (65536 APU cycles is ~73ms NTSC, ~79ms PAL)
+
+// In the case where it's not enough, OP_WAIT can be used.
+// OP_WAIT is structured differently from other opcodes:
+// 0x00         u8          opcode
+// 0x01-0x03    u24         duration
+
+// The duration for a wait op is 3 bytes, which has the range [1, 16777216]
+// 16777216 APU cycles is a whopping ~19s NTSC, ~20s PAL
+// In case a 20 second delay is STILL not enough, wait ops can be chained for a delay of however long you want.
+
+// How to think of the duration conceptually (Why no zero deltas?):
+// A real NES running a game/audio driver has to execute code, and every instruction always takes some amount of actual time.
+// Similarly, when playing a stream, fam also has to execute code which takes actual time.
+// If we were to pretend register writes can be done in zero time, 
+// we would run the risk of stalling the audio thread by executing an arbitrary number of zero-delta ops.
+// Conceptually, the stream operations are the output of some code that would run on an actual NES (Including all the unrelated gameplay code that also needs to be executed in between). 
+// There's no way for me to know how long that code would actually take to execute, so I can't set fixed durations for operations. 
+// Therefore I've left it up to the stream author to tell fam how long they should take.
+// What I do know with certainty is that that time can never be zero.
 
 #define STREAM_MAGIC "FAM"
 #define STREAM_VERSION_MAJOR 1
@@ -47,7 +82,7 @@
 #define STREAM_HEADER_FIELD_OP_DATA_OFFSET                      0x1C
 #define STREAM_HEADER_FIELD_CHANNEL_MASK                        0x20
 
-#define STREAM_OP_SIZE 2
+#define STREAM_OP_SIZE 4
 #define MUSIC_DPCM_SAMPLE_BANK_SIZE 0x4000 // 16 kB
 #define MUSIC_MAX_DPCM_BANK_COUNT 256 // Needs to be addressable with one byte
 
@@ -76,22 +111,6 @@ typedef enum {
 
 // The channels controlled by the APU status register $4015
 #define CHANNEL_MASK_APU_STATUS ((1ull << (CHAN_ID_DMC + 1)) - 1)
-
-// Opcode allocation policy for expansion chips:
-//
-// One opcode per register will not fit all the planned expansion chips.
-// The six planned chips have 325 addressable registers between them,
-// and we only have 232 to spare (0x16-0xFD).
-// Therefore, opcodes should be assigned according to the following rules:
-//
-// 1. Per-frame register traffic gets direct opcodes for chips with a small
-//    register file. Cheapest in file size, and this is the traffic that repeats every frame.
-// 2. Chips with a hardware address/data port pair get an ADDR + DATA opcode pair when their
-//    register file is large. Namco 163's data port auto-increments, so burst writes are actually
-//    cheaper this way than with direct opcodes.
-// 3. Static tables (wave RAM, modulation tables) live in data sections addressed by an opcode,
-//    same way the DPCM banks work right now.
-// 4. Opcode blocks are allocated per chip in implementation order.
 
 typedef enum {
     OP_PULSE1_WRITE0        = 0x0,
@@ -122,8 +141,7 @@ typedef enum {
     OP_SWITCH_SAMPLE_BANK   = 0x14,
     OP_STATUS_WRITE         = 0x15,
 
-    OP_ENDFRAME             = 0xFE,
-    OP_ENDSTREAM            = 0xFF,
+    OP_WAIT                 = 0xFF, // 3 bytes of offset
 } StreamOpCode;
 
 typedef enum {

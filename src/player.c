@@ -13,7 +13,7 @@ typedef struct MusicState {
     const uint8_t* data_end;
     const uint8_t* data_pos;
     const uint8_t* data_loop;
-    uint8_t skip_counter;
+    uint32_t cycles_remaining;
 
     const uint8_t* dpcm_bank_data_begin;
     const uint8_t* current_dpcm_bank_data;
@@ -25,7 +25,7 @@ typedef struct SfxState {
     const uint8_t* data_begin;
     const uint8_t* data_end;
     const uint8_t* data_pos;
-    uint8_t skip_counter;
+    uint32_t cycles_remaining;
 
     bool enabled; // Affects APU channel status but not channel ownership
 } SfxState;
@@ -48,14 +48,7 @@ struct FamPlayer {
     SfxState sfx_state[SFX_CHANNEL_COUNT];
 
     uint8_t last_status_written;
-
-    uint64_t cycles_per_frame_fixed; // UQ32.32 fixed point
-    uint64_t cycles_to_next_frame_fixed; // UQ32.32 fixed point
 };
-
-// APU cycles per video frame, UQ32.32
-// Both are exact quarter-cycles (59561/4 NTSC, 66495/4 PAL), so the fixed-point form is lossless
-static const uint64_t CYCLES_PER_FRAME[2] = { 59561ull << 30, 66495ull << 30 }; // 60.099 Hz / 50.007 Hz
 
 static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_pulse1, 0, 4);
@@ -169,7 +162,15 @@ static void player_switch_music_dpcm_bank(FamPlayer* player, uint8_t index) {
     player->music_state.current_dpcm_bank_data = player->music_state.dpcm_bank_data_begin + (size_t)index * MUSIC_DPCM_SAMPLE_BANK_SIZE;
 }
 
-static void player_process_music(FamPlayer* player) {
+static uint32_t player_stream_get_delta(const uint8_t* pos) {
+    const uint8_t opcode = pos[0];
+    if (opcode >= OP_WAIT) {
+        return ((uint32_t)pos[1] | (uint32_t)pos[2] << 8 | (uint32_t)pos[3] << 16) + 1;
+    }
+    return ((uint32_t)pos[2] | (uint32_t)pos[3] << 8) + 1;
+}
+
+static void player_process_music(FamPlayer* player, uint32_t cycles) {
     if (player->music == NULL) {
         return;
     }
@@ -180,228 +181,229 @@ static void player_process_music(FamPlayer* player) {
         return;
     }
 
-    if (state->skip_counter > 0) {
-        state->skip_counter--;
+    if (cycles < state->cycles_remaining) {
+        state->cycles_remaining -= cycles;
         return;
     }
 
-loop:
+    // NOTE: cycles is never larger than cycles_remaining
+    // Therefore if it's not less than, it's exactly equal
+    if (state->data_pos >= state->data_end) {
+        // End of song reached
+        if (state->data_loop == NULL) {
+            fam_player_stop_music(player);
+            return;
+        }
 
-    while (state->data_pos < state->data_end) {
-        uint8_t opcode = *state->data_pos++;
-        uint8_t op_data = *state->data_pos++;
+        // Fall through to run the loop point op right away, with no wait
+        state->data_pos = state->data_loop;
+    }
 
-        switch(opcode) {
-            case OP_PULSE1_WRITE0:
-            case OP_PULSE1_WRITE1:
-            case OP_PULSE1_WRITE2:
-            case OP_PULSE1_WRITE3:
-                {
-                    if ((state->channel_mask & CHAN_BIT_PULSE1) == 0) break;
+    const uint8_t* op = state->data_pos;
+    const uint8_t opcode = op[0];
+    const uint8_t op_data = op[1];
 
-                    int offset = opcode - OP_PULSE1_WRITE0;
-                    player->reserve_pulse1[offset] = op_data;
-                    if (player->sfx[CHAN_ID_PULSE1] == NULL) {
-                        fam_apu_write_register(player->apu, (uint16_t)(0x4000 + offset), op_data);
-                    }
-                    break;
+    switch(opcode) {
+        case OP_PULSE1_WRITE0:
+        case OP_PULSE1_WRITE1:
+        case OP_PULSE1_WRITE2:
+        case OP_PULSE1_WRITE3:
+            {
+                if ((state->channel_mask & CHAN_BIT_PULSE1) == 0) break;
+
+                int offset = opcode - OP_PULSE1_WRITE0;
+                player->reserve_pulse1[offset] = op_data;
+                if (player->sfx[CHAN_ID_PULSE1] == NULL) {
+                    fam_apu_write_register(player->apu, (uint16_t)(0x4000 + offset), op_data);
                 }
-            case OP_PULSE2_WRITE0:
-            case OP_PULSE2_WRITE1:
-            case OP_PULSE2_WRITE2:
-            case OP_PULSE2_WRITE3:
-                {
-                    if ((state->channel_mask & CHAN_BIT_PULSE2) == 0) break;
-
-                    int offset = opcode - OP_PULSE2_WRITE0;
-                    player->reserve_pulse2[offset] = op_data;
-                    if (player->sfx[CHAN_ID_PULSE2] == NULL) {
-                        fam_apu_write_register(player->apu, (uint16_t)(0x4004 + offset), op_data);
-                    }
-                    break;
-                }
-            case OP_TRIANGLE_WRITE0:
-            case OP_TRIANGLE_WRITE1:
-            case OP_TRIANGLE_WRITE2:
-            case OP_TRIANGLE_WRITE3:
-                {
-                    if ((state->channel_mask & CHAN_BIT_TRIANGLE) == 0) break;
-
-                    int offset = opcode - OP_TRIANGLE_WRITE0;
-                    player->reserve_triangle[offset] = op_data;
-                    if (player->sfx[CHAN_ID_TRIANGLE] == NULL) {
-                        fam_apu_write_register(player->apu, (uint16_t)(0x4008 + offset), op_data);
-                    }
-                    break;
-                }
-            case OP_NOISE_WRITE0:
-            case OP_NOISE_WRITE1:
-            case OP_NOISE_WRITE2:
-            case OP_NOISE_WRITE3:
-                {
-                    if ((state->channel_mask & CHAN_BIT_NOISE) == 0) break;
-
-                    int offset = opcode - OP_NOISE_WRITE0;
-                    player->reserve_noise[offset] = op_data;
-                    if (player->sfx[CHAN_ID_NOISE] == NULL) {
-                        fam_apu_write_register(player->apu, (uint16_t)(0x400C + offset), op_data);
-                    }
-                    break;
-                }
-            case OP_DMC_WRITE0:
-            case OP_DMC_WRITE1:
-            case OP_DMC_WRITE2:
-            case OP_DMC_WRITE3:
-                {
-                    if ((state->channel_mask & CHAN_BIT_DMC) == 0) break;
-
-                    int offset = opcode - OP_DMC_WRITE0;
-                    player->reserve_dmc[offset] = op_data;
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4010 + offset), op_data);
-                    break;
-                }
-            case OP_STATUS_WRITE:
-                player->reserve_status = (uint8_t)(op_data & state->channel_mask & CHANNEL_MASK_APU_STATUS);
-                player_update_status_register(player, true);
                 break;
-            case OP_SWITCH_SAMPLE_BANK:
+            }
+        case OP_PULSE2_WRITE0:
+        case OP_PULSE2_WRITE1:
+        case OP_PULSE2_WRITE2:
+        case OP_PULSE2_WRITE3:
+            {
+                if ((state->channel_mask & CHAN_BIT_PULSE2) == 0) break;
+
+                int offset = opcode - OP_PULSE2_WRITE0;
+                player->reserve_pulse2[offset] = op_data;
+                if (player->sfx[CHAN_ID_PULSE2] == NULL) {
+                    fam_apu_write_register(player->apu, (uint16_t)(0x4004 + offset), op_data);
+                }
+                break;
+            }
+        case OP_TRIANGLE_WRITE0:
+        case OP_TRIANGLE_WRITE1:
+        case OP_TRIANGLE_WRITE2:
+        case OP_TRIANGLE_WRITE3:
+            {
+                if ((state->channel_mask & CHAN_BIT_TRIANGLE) == 0) break;
+
+                int offset = opcode - OP_TRIANGLE_WRITE0;
+                player->reserve_triangle[offset] = op_data;
+                if (player->sfx[CHAN_ID_TRIANGLE] == NULL) {
+                    fam_apu_write_register(player->apu, (uint16_t)(0x4008 + offset), op_data);
+                }
+                break;
+            }
+        case OP_NOISE_WRITE0:
+        case OP_NOISE_WRITE1:
+        case OP_NOISE_WRITE2:
+        case OP_NOISE_WRITE3:
+            {
+                if ((state->channel_mask & CHAN_BIT_NOISE) == 0) break;
+
+                int offset = opcode - OP_NOISE_WRITE0;
+                player->reserve_noise[offset] = op_data;
+                if (player->sfx[CHAN_ID_NOISE] == NULL) {
+                    fam_apu_write_register(player->apu, (uint16_t)(0x400C + offset), op_data);
+                }
+                break;
+            }
+        case OP_DMC_WRITE0:
+        case OP_DMC_WRITE1:
+        case OP_DMC_WRITE2:
+        case OP_DMC_WRITE3:
+            {
                 if ((state->channel_mask & CHAN_BIT_DMC) == 0) break;
 
-                uint8_t bank_index = op_data;
-
-                if (bank_index >= state->dpcm_bank_count) {
-                    state->current_dpcm_bank_data = NULL;
-                    break;
-                }
-
-                player_switch_music_dpcm_bank(player, bank_index);
-
+                int offset = opcode - OP_DMC_WRITE0;
+                player->reserve_dmc[offset] = op_data;
+                fam_apu_write_register(player->apu, (uint16_t)(0x4010 + offset), op_data);
                 break;
-            case OP_ENDFRAME:
-                state->skip_counter = op_data;
-                return;
-            
-            case OP_ENDSTREAM:
-                goto endstream;
+            }
+        case OP_STATUS_WRITE:
+            player->reserve_status = (uint8_t)(op_data & state->channel_mask & CHANNEL_MASK_APU_STATUS);
+            player_update_status_register(player, true);
+            break;
+        case OP_SWITCH_SAMPLE_BANK:
+            if ((state->channel_mask & CHAN_BIT_DMC) == 0) break;
 
-            default:
+            uint8_t bank_index = op_data;
+
+            if (bank_index >= state->dpcm_bank_count) {
+                state->current_dpcm_bank_data = NULL;
                 break;
-        }
+            }
+
+            player_switch_music_dpcm_bank(player, bank_index);
+
+            break;
+        case OP_WAIT:
+            // Carries nothing but a wider delta, so there is nothing to apply
+            break;
+
+        default:
+            break;
     }
 
-endstream:
-
-    // End of song reached
-    if (state->data_loop == NULL) {
-        fam_player_stop_music(player);
-    } else {
-        state->data_pos = state->data_loop;
-        goto loop;
-    }
+    state->cycles_remaining = player_stream_get_delta(state->data_pos);
+    state->data_pos += STREAM_OP_SIZE;
 }
 
-static void player_process_sfx(FamPlayer* player, int channel) {
+static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) {
     if (player->sfx[channel] == NULL) {
         return;
     }
 
     SfxState* state = &player->sfx_state[channel];
 
-    if (state->skip_counter > 0) {
-        state->skip_counter--;
+    if (cycles < state->cycles_remaining) {
+        state->cycles_remaining -= cycles;
         return;
     }
 
-    while (state->data_pos < state->data_end) {
-        uint8_t opcode = *state->data_pos++;
-        uint8_t op_data = *state->data_pos++;
+    if (state->data_pos >= state->data_end) {
+        // A sound effect never loops, so running out of ops ends it
+        player->sfx[channel] = NULL;
+        memset(state, 0, sizeof(SfxState));
+        player_update_status_register(player, false);
+        player_restore_reserve(player, channel);
 
-        switch(opcode) {
-            case OP_PULSE1_WRITE0:
-            case OP_PULSE1_WRITE1:
-            case OP_PULSE1_WRITE2:
-            case OP_PULSE1_WRITE3:
-                {
-                    if (channel != CHAN_ID_PULSE1) break;
-
-                    int offset = opcode - OP_PULSE1_WRITE0;
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4000 + offset), op_data);
-                    break;
-                }
-            case OP_PULSE2_WRITE0:
-            case OP_PULSE2_WRITE1:
-            case OP_PULSE2_WRITE2:
-            case OP_PULSE2_WRITE3:
-                {
-                    if (channel != CHAN_ID_PULSE2) break;
-
-                    int offset = opcode - OP_PULSE2_WRITE0;
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4004 + offset), op_data);
-                    break;
-                }
-            case OP_TRIANGLE_WRITE0:
-            case OP_TRIANGLE_WRITE1:
-            case OP_TRIANGLE_WRITE2:
-            case OP_TRIANGLE_WRITE3:
-                {
-                    if (channel != CHAN_ID_TRIANGLE) break;
-
-                    int offset = opcode - OP_TRIANGLE_WRITE0;
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4008 + offset), op_data);
-                    break;
-                }
-            case OP_NOISE_WRITE0:
-            case OP_NOISE_WRITE1:
-            case OP_NOISE_WRITE2:
-            case OP_NOISE_WRITE3:
-                {
-                    if (channel != CHAN_ID_NOISE) break;
-
-                    int offset = opcode - OP_NOISE_WRITE0;
-                    fam_apu_write_register(player->apu, (uint16_t)(0x400C + offset), op_data);
-                    break;
-                }
-            case OP_DMC_WRITE0:
-            case OP_DMC_WRITE1:
-            case OP_DMC_WRITE2:
-            case OP_DMC_WRITE3:
-            case OP_SWITCH_SAMPLE_BANK:
-                break;
-            case OP_STATUS_WRITE:
-                state->enabled = (op_data >> channel) & 1;
-                player_update_status_register(player, false);
-                break;
-
-            case OP_ENDFRAME:
-                state->skip_counter = op_data;
-                return;
-            
-            case OP_ENDSTREAM:
-                goto endstream;
-            
-            default:
-                break;
+        // Re-mute paused music after reserve restore
+        if (player->music_state.paused) {
+            player_silence_music(player);
         }
+
+        return;
     }
 
-endstream:
+    const uint8_t* op = state->data_pos;
+    const uint8_t opcode = op[0];
+    const uint8_t op_data = op[1];
 
-    player->sfx[channel] = NULL;
-    memset(state, 0, sizeof(SfxState));
-    player_update_status_register(player, false);
-    player_restore_reserve(player, channel);
+    switch(opcode) {
+        case OP_PULSE1_WRITE0:
+        case OP_PULSE1_WRITE1:
+        case OP_PULSE1_WRITE2:
+        case OP_PULSE1_WRITE3:
+            {
+                if (channel != CHAN_ID_PULSE1) break;
 
-    // Re-mute paused music after reserve restore
-    if (player->music_state.paused) {
-        player_silence_music(player);
+                int offset = opcode - OP_PULSE1_WRITE0;
+                fam_apu_write_register(player->apu, (uint16_t)(0x4000 + offset), op_data);
+                break;
+            }
+        case OP_PULSE2_WRITE0:
+        case OP_PULSE2_WRITE1:
+        case OP_PULSE2_WRITE2:
+        case OP_PULSE2_WRITE3:
+            {
+                if (channel != CHAN_ID_PULSE2) break;
+
+                int offset = opcode - OP_PULSE2_WRITE0;
+                fam_apu_write_register(player->apu, (uint16_t)(0x4004 + offset), op_data);
+                break;
+            }
+        case OP_TRIANGLE_WRITE0:
+        case OP_TRIANGLE_WRITE1:
+        case OP_TRIANGLE_WRITE2:
+        case OP_TRIANGLE_WRITE3:
+            {
+                if (channel != CHAN_ID_TRIANGLE) break;
+
+                int offset = opcode - OP_TRIANGLE_WRITE0;
+                fam_apu_write_register(player->apu, (uint16_t)(0x4008 + offset), op_data);
+                break;
+            }
+        case OP_NOISE_WRITE0:
+        case OP_NOISE_WRITE1:
+        case OP_NOISE_WRITE2:
+        case OP_NOISE_WRITE3:
+            {
+                if (channel != CHAN_ID_NOISE) break;
+
+                int offset = opcode - OP_NOISE_WRITE0;
+                fam_apu_write_register(player->apu, (uint16_t)(0x400C + offset), op_data);
+                break;
+            }
+        case OP_DMC_WRITE0:
+        case OP_DMC_WRITE1:
+        case OP_DMC_WRITE2:
+        case OP_DMC_WRITE3:
+        case OP_SWITCH_SAMPLE_BANK:
+            break;
+        case OP_STATUS_WRITE:
+            state->enabled = (op_data >> channel) & 1;
+            player_update_status_register(player, false);
+            break;
+
+        case OP_WAIT:
+            break;
+
+        default:
+            break;
     }
+
+    state->cycles_remaining = player_stream_get_delta(state->data_pos);
+    state->data_pos += STREAM_OP_SIZE;
 }
 
-static void player_process_frame(FamPlayer* player) {
-    player_process_music(player);
+static void player_process_cycles(FamPlayer* player, uint32_t cycles) {
+    player_process_music(player, cycles);
     
     for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
-        player_process_sfx(player, i);
+        player_process_sfx(player, i, cycles);
     }
 }
 
@@ -423,8 +425,6 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu) {
 
     player->apu = apu;
 
-    player->cycles_per_frame_fixed = CYCLES_PER_FRAME[fam_apu_get_region(apu)]; 
-
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
     // 4-step sequence, disable IRQ
     fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x40);
@@ -445,7 +445,7 @@ void fam_player_shutdown(FamPlayer* player) {
     }
 }
 
-void fam_player_run(FamPlayer* player, int sample_count, void* out_samples) {
+void fam_player_run(FamPlayer* player, size_t sample_count, void* out_samples) {
     assert(player != NULL);
     assert(out_samples != NULL);
     assert(sample_count >= 0);
@@ -454,23 +454,31 @@ void fam_player_run(FamPlayer* player, int sample_count, void* out_samples) {
         return;
     }
 
-    int samples_remaining = sample_count;
+    size_t cycles_remaining = fam_apu_get_cycles_for_samples(player->apu, sample_count);
     const size_t stride = fam_apu_get_sample_size(player->apu);
+    size_t samples_offset = 0;
 
-    while (samples_remaining) {
-        int cycles_for_samples = fam_apu_get_cycles_for_samples(player->apu, samples_remaining);
-        int frame_cycles = (int)(player->cycles_to_next_frame_fixed >> 32);
-        int run_cycles = frame_cycles < cycles_for_samples ? frame_cycles : cycles_for_samples;
-        const size_t samples_offset = (sample_count - samples_remaining) * stride;
-        int processed = fam_apu_run(player->apu, run_cycles, (uint8_t*)out_samples + samples_offset);
-        samples_remaining -= processed;
-        
-        player->cycles_to_next_frame_fixed -= (uint64_t)run_cycles << 32;
-        
-        if (player->cycles_to_next_frame_fixed < (1ull << 32)) {
-            player_process_frame(player);
-            player->cycles_to_next_frame_fixed += player->cycles_per_frame_fixed;
+    while (cycles_remaining > 0) {
+        uint32_t max_cycles = (uint32_t)cycles_remaining;
+
+        if (player->music != NULL && !player->music_state.paused &&
+            player->music_state.cycles_remaining < max_cycles) {
+            max_cycles = player->music_state.cycles_remaining;
         }
+        for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
+            if (player->sfx[i] != NULL && player->sfx_state[i].cycles_remaining < max_cycles) {
+                max_cycles = player->sfx_state[i].cycles_remaining;
+            }
+        }
+
+        if (max_cycles > 0) {
+            size_t processed = fam_apu_run(player->apu, max_cycles, (uint8_t*)out_samples + samples_offset);
+            samples_offset += processed * stride;
+        }
+
+        player_process_cycles(player, max_cycles);
+
+        cycles_remaining -= max_cycles;
     }
 }
 
@@ -496,7 +504,7 @@ FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
 
     // A zero loop_offset means no looping
     player->music_state.data_loop = info.music_loop_offset ? (const uint8_t*)music + info.music_loop_offset : NULL;
-    player->music_state.skip_counter = 0;
+    player->music_state.cycles_remaining = 0;
 
     player->music_state.dpcm_bank_data_begin = (const uint8_t*)music + info.music_dpcm_bank_data_offset;
 
@@ -589,7 +597,7 @@ FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
         player->sfx_state[channel].data_begin = (const uint8_t*)sfx + (size_t)info.op_data_offset;
         player->sfx_state[channel].data_end = player->sfx_state[channel].data_begin + info.op_data_size;
         player->sfx_state[channel].data_pos = player->sfx_state[channel].data_begin;
-        player->sfx_state[channel].skip_counter = 0;
+        player->sfx_state[channel].cycles_remaining = 0;
         player->sfx_state[channel].enabled = false;
 
         break;
