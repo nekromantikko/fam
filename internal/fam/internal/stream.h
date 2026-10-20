@@ -47,7 +47,7 @@
 #define STREAM_HEADER_FIELD_OP_DATA_OFFSET                      0x1C
 #define STREAM_HEADER_FIELD_CHANNEL_MASK                        0x20
 
-#define STREAM_OP_SIZE 2
+#define STREAM_OP_SIZE 4
 #define MUSIC_DPCM_SAMPLE_BANK_SIZE 0x4000 // 16 kB
 #define MUSIC_MAX_DPCM_BANK_COUNT 256 // Needs to be addressable with one byte
 
@@ -122,7 +122,7 @@ typedef enum {
     OP_SWITCH_SAMPLE_BANK   = 0x14,
     OP_STATUS_WRITE         = 0x15,
 
-    OP_ENDFRAME             = 0xFE,
+    OP_SLEEP                = 0xFE, // 3 bytes of offset
     OP_ENDSTREAM            = 0xFF,
 } StreamOpCode;
 

@@ -13,7 +13,7 @@ typedef struct MusicState {
     const uint8_t* data_end;
     const uint8_t* data_pos;
     const uint8_t* data_loop;
-    uint8_t skip_counter;
+    uint32_t cycles_remaining;
 
     const uint8_t* dpcm_bank_data_begin;
     const uint8_t* current_dpcm_bank_data;
@@ -25,7 +25,7 @@ typedef struct SfxState {
     const uint8_t* data_begin;
     const uint8_t* data_end;
     const uint8_t* data_pos;
-    uint8_t skip_counter;
+    uint32_t cycles_remaining;
 
     bool enabled; // Affects APU channel status but not channel ownership
 } SfxState;
@@ -48,14 +48,7 @@ struct FamPlayer {
     SfxState sfx_state[SFX_CHANNEL_COUNT];
 
     uint8_t last_status_written;
-
-    uint64_t cycles_per_frame_fixed; // UQ32.32 fixed point
-    uint64_t cycles_to_next_frame_fixed; // UQ32.32 fixed point
 };
-
-// APU cycles per video frame, UQ32.32
-// Both are exact quarter-cycles (59561/4 NTSC, 66495/4 PAL), so the fixed-point form is lossless
-static const uint64_t CYCLES_PER_FRAME[2] = { 59561ull << 30, 66495ull << 30 }; // 60.099 Hz / 50.007 Hz
 
 static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_pulse1, 0, 4);
@@ -169,7 +162,15 @@ static void player_switch_music_dpcm_bank(FamPlayer* player, uint8_t index) {
     player->music_state.current_dpcm_bank_data = player->music_state.dpcm_bank_data_begin + (size_t)index * MUSIC_DPCM_SAMPLE_BANK_SIZE;
 }
 
-static void player_process_music(FamPlayer* player) {
+static uint32_t player_op_get_delta(const uint8_t* op) {
+    const uint8_t opcode = op[0];
+    if (opcode >= OP_SLEEP) {
+        return (uint32_t)op[1] | (uint32_t)op[2] << 8 | (uint32_t)op[3] << 16;
+    }
+    return (uint32_t)op[2] | (uint32_t)op[3] << 8;
+}
+
+static void player_process_music(FamPlayer* player, uint32_t cycles) {
     if (player->music == NULL) {
         return;
     }
@@ -277,7 +278,7 @@ loop:
                 player_switch_music_dpcm_bank(player, bank_index);
 
                 break;
-            case OP_ENDFRAME:
+            case OP_SLEEP:
                 state->skip_counter = op_data;
                 return;
             
@@ -300,7 +301,7 @@ endstream:
     }
 }
 
-static void player_process_sfx(FamPlayer* player, int channel) {
+static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) {
     if (player->sfx[channel] == NULL) {
         return;
     }
@@ -313,8 +314,11 @@ static void player_process_sfx(FamPlayer* player, int channel) {
     }
 
     while (state->data_pos < state->data_end) {
-        uint8_t opcode = *state->data_pos++;
-        uint8_t op_data = *state->data_pos++;
+        const uint8_t* op = state->data_pos;
+        state->data_pos += STREAM_OP_SIZE;
+        const uint8_t opcode = op[0];
+        const uint8_t op_data = op[1];
+        const uint16_t op_offset = op[2] | ((uint16_t)op[3] << 8);
 
         switch(opcode) {
             case OP_PULSE1_WRITE0:
@@ -372,7 +376,7 @@ static void player_process_sfx(FamPlayer* player, int channel) {
                 player_update_status_register(player, false);
                 break;
 
-            case OP_ENDFRAME:
+            case OP_SLEEP:
                 state->skip_counter = op_data;
                 return;
             
@@ -397,11 +401,11 @@ endstream:
     }
 }
 
-static void player_process_frame(FamPlayer* player) {
-    player_process_music(player);
+static void player_process_cycles(FamPlayer* player, uint32_t cycles) {
+    player_process_music(player, cycles);
     
     for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
-        player_process_sfx(player, i);
+        player_process_sfx(player, i, cycles);
     }
 }
 
@@ -422,8 +426,6 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu) {
     memset(player, 0, sizeof(FamPlayer));
 
     player->apu = apu;
-
-    player->cycles_per_frame_fixed = CYCLES_PER_FRAME[fam_apu_get_region(apu)]; 
 
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
     // 4-step sequence, disable IRQ
@@ -455,22 +457,29 @@ void fam_player_run(FamPlayer* player, int sample_count, void* out_samples) {
     }
 
     int samples_remaining = sample_count;
+    int cycles_remaining = fam_apu_get_cycles_for_samples(player->apu, sample_count);
     const size_t stride = fam_apu_get_sample_size(player->apu);
 
     while (samples_remaining) {
-        int cycles_for_samples = fam_apu_get_cycles_for_samples(player->apu, samples_remaining);
-        int frame_cycles = (int)(player->cycles_to_next_frame_fixed >> 32);
-        int run_cycles = frame_cycles < cycles_for_samples ? frame_cycles : cycles_for_samples;
-        const size_t samples_offset = (sample_count - samples_remaining) * stride;
-        int processed = fam_apu_run(player->apu, run_cycles, (uint8_t*)out_samples + samples_offset);
-        samples_remaining -= processed;
-        
-        player->cycles_to_next_frame_fixed -= (uint64_t)run_cycles << 32;
-        
-        if (player->cycles_to_next_frame_fixed < (1ull << 32)) {
-            player_process_frame(player);
-            player->cycles_to_next_frame_fixed += player->cycles_per_frame_fixed;
+        // The maximum amount of cycles we can run before the next stream op needs to be processed (min of all cycles_remaining)
+        uint32_t max_cycles = player->music ? player->music_state.cycles_remaining : 0;
+        for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
+            uint32_t sfx_cycles_remaining = player->sfx[i] ? player->sfx_state[i].cycles_remaining : 0;
+            max_cycles = max_cycles <= sfx_cycles_remaining ? max_cycles : sfx_cycles_remaining;
         }
+        
+        // 0 means nothing to process, so running all remaining cycles
+        if (max_cycles == 0) {
+            max_cycles = cycles_remaining;
+        }
+
+        const size_t samples_offset = (sample_count - samples_remaining) * stride;
+        int processed = fam_apu_run(player->apu, (int)max_cycles, (uint8_t*)out_samples + samples_offset);
+
+        player_process_cycles(player, max_cycles);
+
+        cycles_remaining -= max_cycles;
+        samples_remaining -= processed;
     }
 }
 
@@ -496,7 +505,7 @@ FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
 
     // A zero loop_offset means no looping
     player->music_state.data_loop = info.music_loop_offset ? (const uint8_t*)music + info.music_loop_offset : NULL;
-    player->music_state.skip_counter = 0;
+    player->music_state.cycles_remaining = player_op_get_delta(player->music_state.data_pos);
 
     player->music_state.dpcm_bank_data_begin = (const uint8_t*)music + info.music_dpcm_bank_data_offset;
 
@@ -589,7 +598,7 @@ FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
         player->sfx_state[channel].data_begin = (const uint8_t*)sfx + (size_t)info.op_data_offset;
         player->sfx_state[channel].data_end = player->sfx_state[channel].data_begin + info.op_data_size;
         player->sfx_state[channel].data_pos = player->sfx_state[channel].data_begin;
-        player->sfx_state[channel].skip_counter = 0;
+        player->sfx_state[channel].cycles_remaining = player_op_get_delta(player->sfx_state[channel].data_pos);
         player->sfx_state[channel].enabled = false;
 
         break;

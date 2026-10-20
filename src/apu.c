@@ -722,8 +722,8 @@ static inline int apu_drain_samples(FamApu* apu, uint32_t count, float* out_samp
         const float sample = apu_dc_block(apu, apu->delta_accumulator);
         if (out_samples) {
             out_samples[i] = sample;
-            samples_processed++;
         }
+        samples_processed++;
     }
     return samples_processed;
 }
