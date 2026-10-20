@@ -62,11 +62,11 @@ FAM_API void FAM_CALL fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, v
 // fam_apu_get_cycles_for_samples(apu, n) cycles writes exactly n samples. For any other
 // cycle count, size the buffer with fam_apu_get_samples_for_cycles.
 // If out_samples is NULL, nothing is output
-FAM_API int FAM_CALL fam_apu_run(FamApu* apu, int cycles, void* out_samples);
+FAM_API size_t FAM_CALL fam_apu_run(FamApu* apu, size_t cycles, void* out_samples);
 FAM_API double FAM_CALL fam_apu_get_clock_rate(const FamApu* apu);
 FAM_API size_t FAM_CALL fam_apu_get_sample_size(const FamApu* apu);
-FAM_API int FAM_CALL fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count);
-FAM_API int FAM_CALL fam_apu_get_samples_for_cycles(const FamApu* apu, int cycle_count);
+FAM_API size_t FAM_CALL fam_apu_get_cycles_for_samples(const FamApu* apu, size_t sample_count);
+FAM_API size_t FAM_CALL fam_apu_get_samples_for_cycles(const FamApu* apu, size_t cycle_count);
 
 #ifdef __cplusplus
 }

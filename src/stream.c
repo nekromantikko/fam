@@ -2,6 +2,7 @@
 #include <fam/internal/stream.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 
 static FamResult validate_format(size_t buffer_size, const uint8_t* buffer) {
@@ -39,6 +40,10 @@ static FamResult validate_common(const StreamInfo* info, StreamUsage expected_us
         return FAM_ERROR_UNSUPPORTED_FEATURE;
     }
 
+    if (info->op_count > SIZE_MAX / STREAM_OP_SIZE) {
+        return FAM_ERROR_INVALID_FORMAT;
+    }
+
     if (info->op_data_offset > info->total_size || info->op_data_size > info->total_size - info->op_data_offset) {
         return FAM_ERROR_INVALID_FORMAT;
     }
@@ -57,7 +62,7 @@ static FamResult validate_music(const StreamInfo* info) {
     if (info->music_loop_offset != 0) {
         if (info->music_loop_offset < info->op_data_offset ||
             info->music_loop_offset - info->op_data_offset >= info->op_data_size ||
-            ((info->music_loop_offset - info->op_data_offset) & 1) != 0 ) {
+            ((info->music_loop_offset - info->op_data_offset) & 3) != 0 ) {
             return FAM_ERROR_INVALID_FORMAT;
         }
     }
