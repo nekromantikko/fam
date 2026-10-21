@@ -122,8 +122,7 @@ typedef enum {
     OP_SWITCH_SAMPLE_BANK   = 0x14,
     OP_STATUS_WRITE         = 0x15,
 
-    OP_SLEEP                = 0xFE, // 3 bytes of offset
-    OP_ENDSTREAM            = 0xFF,
+    OP_WAIT                 = 0xFF, // 3 bytes of offset
 } StreamOpCode;
 
 typedef enum {

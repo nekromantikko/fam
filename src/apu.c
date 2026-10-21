@@ -713,9 +713,9 @@ static inline float apu_dc_block(FamApu* apu, float x) {
 // Integrates the delta buffer and outputs samples
 // Drained buffer slots are cleared afterwards
 // NOTE: count must not make the read position exceed buffer size
-static inline int apu_drain_samples(FamApu* apu, uint32_t count, float* out_samples) {
-    int samples_processed = 0;
-    for (uint32_t i = 0; i < count; i++) {
+static inline size_t apu_drain_samples(FamApu* apu, size_t count, float* out_samples) {
+    size_t samples_processed = 0;
+    for (size_t i = 0; i < count; i++) {
         apu->delta_accumulator += apu->delta_buffer[apu->delta_read_pos];
         apu->delta_buffer[apu->delta_read_pos++] = 0.0f;
         // DC block is a recursive filter, so it needs to run for all samples regardless of output
@@ -741,12 +741,12 @@ FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* confi
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
-    if (config->region > FAM_REGION_PAL) {
+    if (config->region < 0 || config->region > FAM_REGION_PAL) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
     // TODO: Other output formats
-    if (config->format > FAM_AUDIO_F32) {
+    if (config->format < 0 || config->format > FAM_AUDIO_F32) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -915,6 +915,10 @@ FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
         case FAM_REGISTER_NOISE_1:
         case FAM_REGISTER_NOISE_2:
         case FAM_REGISTER_NOISE_3:
+        case FAM_REGISTER_DMC_0:
+        case FAM_REGISTER_DMC_1:
+        case FAM_REGISTER_DMC_2:
+        case FAM_REGISTER_DMC_3:
             return FAM_ERROR_WRITE_ONLY;
         case FAM_REGISTER_STATUS: {
             // NOTE: On real hardware, bit 5 is open bus.
@@ -946,17 +950,17 @@ void fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data) {
     apu->dmc.reader_data = user_data;
 }
 
-int fam_apu_run(FamApu* apu, int cycles, void* out_samples) {
+size_t fam_apu_run(FamApu* apu, size_t cycles, void* out_samples) {
     // A NULL out_samples is valid, it means produce no output
     assert(apu != NULL);
     assert(cycles >= 0);
 
-    uint32_t samples_processed = 0;
+    size_t samples_processed = 0;
 
     // TODO: Other output formats
     float* samples_float = (float*)out_samples;
 
-    for (int i = 0; i < cycles; i++) {
+    for (size_t i = 0; i < cycles; i++) {
         uint64_t next_delta_write_pos = apu->delta_write_pos_fixed + apu->delta_increment;
         // Roll delta buffer if needed
         if (next_delta_write_pos >= (uint64_t)DELTA_BUFFER_SIZE << 32) {
@@ -1010,19 +1014,23 @@ size_t fam_apu_get_sample_size(const FamApu* apu) {
     return 0;
 }
 
-int fam_apu_get_cycles_for_samples(const FamApu* apu, int sample_count) {
+size_t fam_apu_get_cycles_for_samples(const FamApu* apu, size_t sample_count) {
     assert(apu != NULL);
-    assert(sample_count >= 0);
+    if (sample_count == 0) {
+        return 0;
+    }
 
     const uint64_t target = ((apu->delta_write_pos_fixed >> 32) + (uint64_t)sample_count) << 32;
     const uint64_t distance = target - apu->delta_write_pos_fixed;
-    return (int)((distance + apu->delta_increment - 1) / apu->delta_increment);  // ceil
+    return (size_t)((distance + apu->delta_increment - 1) / apu->delta_increment);  // ceil
 }
 
-int fam_apu_get_samples_for_cycles(const FamApu* apu, int cycle_count) {
+size_t fam_apu_get_samples_for_cycles(const FamApu* apu, size_t cycle_count) {
     assert(apu != NULL);
-    assert(cycle_count >= 0);
+    if (cycle_count == 0) {
+        return 0;
+    }
 
     const uint64_t end = apu->delta_write_pos_fixed + (uint64_t)cycle_count * apu->delta_increment;
-    return (int)((end >> 32) - (apu->delta_write_pos_fixed >> 32));
+    return (size_t)((end >> 32) - (apu->delta_write_pos_fixed >> 32));
 }
