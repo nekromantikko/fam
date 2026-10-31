@@ -18,7 +18,7 @@ static FamResult validate_format(size_t buffer_size, const uint8_t* buffer) {
     const uint16_t version_major = read_u16_le(buffer + STREAM_HEADER_FIELD_VERSION_MAJOR);
     const uint16_t version_minor = read_u16_le(buffer + STREAM_HEADER_FIELD_VERSION_MINOR);
     if (version_major != STREAM_VERSION_MAJOR ||
-        version_minor > STREAM_VERSION_MINOR) {
+        version_minor > STREAM_VERSION_MINOR) { // TODO?: Should I allow a larger minor version, actually?
         return FAM_ERROR_UNSUPPORTED_VERSION;
     }
 

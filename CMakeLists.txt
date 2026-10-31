@@ -10,6 +10,7 @@ else()
 endif()
 
 add_library(fam src/apu.c src/player.c src/stream.c)
+add_library(fam::fam ALIAS fam)
 
 include(GNUInstallDirs)
 
@@ -22,7 +23,10 @@ target_include_directories(fam
 )
 target_compile_definitions(fam PRIVATE FAM_BUILD)
 target_compile_features(fam PUBLIC c_std_11)
-set_target_properties(fam PROPERTIES C_VISIBILITY_PRESET hidden)
+set_target_properties(fam PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    DEBUG_POSTFIX d
+)
 
 if(BUILD_SHARED_LIBS)
     target_compile_definitions(fam PUBLIC FAM_SHARED)
