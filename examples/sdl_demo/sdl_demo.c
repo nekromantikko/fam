@@ -1,6 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
 #include <SDL3/SDL.h>
 #include <fam/fam.h>
 
@@ -91,6 +89,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
 }
 
 static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
+    (void)total_amount;
     CallbackData* callback_data = (CallbackData*)userdata;
 
     process_player_commands(callback_data->player, callback_data->cmd_buffer);
@@ -106,40 +105,6 @@ static void audio_callback(void *userdata, SDL_AudioStream *stream, int addition
     }
 }
 
-static bool read_entire_file(const char* path, size_t* out_size, uint8_t** out_data) {
-    FILE* file = fopen(path, "rb");
-    if (file == NULL) {
-        return false;
-    }
-
-    fseek(file, 0, SEEK_END);
-    long length = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    if (length < 0) {
-        fclose(file);
-        return false;
-    }
-
-    uint8_t* data = (uint8_t*)malloc((size_t)length);
-    if (data == NULL) {
-        fclose(file);
-        return false;
-    }
-
-    size_t read_len = fread(data, 1, (size_t)length, file);
-    fclose(file);
-
-    if (read_len != (size_t)length) {
-        free(data);
-        return false;
-    }
-
-    *out_size = (size_t)length;
-    *out_data = data;
-    return true;
-}
-
 int main(int argc, char **argv) {
     if (argc < 2) {
         printf("Usage: %s <song.fam>\n", argv[0]);
@@ -148,9 +113,9 @@ int main(int argc, char **argv) {
     }
 
     size_t file_size;
-    uint8_t* file_data;
-    if (!read_entire_file(argv[1], &file_size, &file_data)) {
-        printf("Could not read '%s'\n", argv[1]);
+    void* file_data = SDL_LoadFile(argv[1], &file_size);
+    if (file_data == NULL) {
+        printf("Could not read '%s': %s\n", argv[1], SDL_GetError());
         return 1;
     }
 
@@ -158,12 +123,11 @@ int main(int argc, char **argv) {
     FamResult err = fam_music_from_buffer(&music, file_size, file_data);
     if (err != FAM_SUCCESS) {
         printf("Loading '%s' failed with error code %d\n", argv[1], err);
-        free(file_data);
+        SDL_free(file_data);
         return 1;
     }
 
-    size_t apu_size = fam_apu_get_memory_required();
-    void* apu_memory = malloc(apu_size);
+    void* apu_memory = SDL_aligned_alloc(fam_apu_get_memory_alignment(), fam_apu_get_memory_required());
     FamApuConfig apu_config = {
         .region = fam_music_get_region(music),
         .sample_rate = SAMPLE_RATE,
@@ -176,8 +140,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    size_t player_size = fam_player_get_memory_required();
-    void* player_memory = malloc(player_size);
+    void* player_memory = SDL_aligned_alloc(fam_player_get_memory_alignment(), fam_player_get_memory_required());
     FamPlayer* player;
     err = fam_player_init(&player, player_memory, apu);
     if (err != FAM_SUCCESS) {
@@ -226,9 +189,9 @@ int main(int argc, char **argv) {
     fam_player_shutdown(player);
     fam_apu_shutdown(apu);
 
-    free(player_memory);
-    free(apu_memory);
-    free(file_data);
+    SDL_aligned_free(player_memory);
+    SDL_aligned_free(apu_memory);
+    SDL_free(file_data);
 
     return 0;
 }
