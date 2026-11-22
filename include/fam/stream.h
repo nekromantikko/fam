@@ -17,6 +17,7 @@ FAM_API FamRegion FAM_CALL fam_music_get_region(const FamMusic* music);
 // See above comment
 FAM_API FamResult FAM_CALL fam_sfx_from_buffer(const FamSfx** out_sfx, size_t buffer_size, const void* buffer);
 FAM_API FamRegion FAM_CALL fam_sfx_get_region(const FamSfx* sfx);
+FAM_API FamChannel FAM_CALL fam_sfx_get_channel(const FamSfx* sfx);
 
 #ifdef __cplusplus
 }

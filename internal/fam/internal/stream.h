@@ -1,4 +1,5 @@
 #pragma once
+#include <fam/common.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -29,7 +30,7 @@
 
 // NOTE: channel_mask does not automatically enable the channels. They must be explicitly enabled with OP_STATUS_WRITE
 // However, enabling channels not declared by channel_mask is a no-op.
-// For sound effects, channel_mask must only contain one set bit (Sound effects play on single channels)
+// For sound effects, channel_mask must contain exactly one set bit (Sound effects play on single channels)
 // Sound effect writes to other channels are completely ignored.
 // For music, writes to other channels are NOT ignored, but there's no output if the channels are not enabled.
 
@@ -86,31 +87,26 @@
 #define MUSIC_DPCM_SAMPLE_BANK_SIZE 0x4000 // 16 kB
 #define MUSIC_MAX_DPCM_BANK_COUNT 256 // Needs to be addressable with one byte
 
-typedef enum {
-    CHAN_ID_PULSE1             = 0,
-    CHAN_ID_PULSE2,
-    CHAN_ID_TRIANGLE,
-    CHAN_ID_NOISE,
-    CHAN_ID_DMC,
-
-    CHAN_COUNT,
-} ChannelId;
+// Channel indices are the public FamChannel values
+// Not public, because it grows when expansion audio channels are added
+#define CHANNEL_COUNT (FAM_CHANNEL_DMC + 1)
 
 typedef enum {
-    CHAN_BIT_PULSE1             = 1 << CHAN_ID_PULSE1,
-    CHAN_BIT_PULSE2             = 1 << CHAN_ID_PULSE2,
-    CHAN_BIT_TRIANGLE           = 1 << CHAN_ID_TRIANGLE,
-    CHAN_BIT_NOISE              = 1 << CHAN_ID_NOISE,
-    CHAN_BIT_DMC                = 1 << CHAN_ID_DMC,
+    CHAN_BIT_PULSE1             = 1 << FAM_CHANNEL_PULSE1,
+    CHAN_BIT_PULSE2             = 1 << FAM_CHANNEL_PULSE2,
+    CHAN_BIT_TRIANGLE           = 1 << FAM_CHANNEL_TRIANGLE,
+    CHAN_BIT_NOISE              = 1 << FAM_CHANNEL_NOISE,
+    CHAN_BIT_DMC                = 1 << FAM_CHANNEL_DMC,
 } ChannelFlags;
 
-#define CHANNEL_MASK_SUPPORTED ((1ull << CHAN_COUNT) - 1)
+#define CHANNEL_MASK_SUPPORTED ((1ull << CHANNEL_COUNT) - 1)
 
+// Sound effects can play on channels [0, SFX_CHANNEL_COUNT)
 #define SFX_CHANNEL_COUNT 4
 #define CHANNEL_MASK_SFX ((1ull << SFX_CHANNEL_COUNT) - 1)
 
 // The channels controlled by the APU status register $4015
-#define CHANNEL_MASK_APU_STATUS ((1ull << (CHAN_ID_DMC + 1)) - 1)
+#define CHANNEL_MASK_APU_STATUS ((1ull << (FAM_CHANNEL_DMC + 1)) - 1)
 
 typedef enum {
     OP_PULSE1_WRITE0        = 0x0,

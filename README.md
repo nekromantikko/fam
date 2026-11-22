@@ -52,7 +52,7 @@ The library currently assumes a **little-endian** architecture. It *should* also
 
 ### Audio Player (Driver)
 
-An implementation capable of driving a single music track and up to four sound effects simultaneously, one per channel (pulses, triangle or noise). A sound effect takes over its channel for its duration, and when it ends, the music is restored on that channel. Playing a sound effect on a channel that already has one playing replaces the old one.
+An implementation capable of driving a single music track and up to four sound effects simultaneously, one per channel (pulses, triangle or noise). A sound effect takes over its channel for its duration, and when it ends or is stopped, the music is restored on that channel. Playing a sound effect on a channel that already has one playing replaces the old one.
 
 ## Building
 
@@ -110,6 +110,8 @@ target_link_libraries(my_game PRIVATE fam::fam)
 
 ## API Overview
 
+**NOTE: The API is still subject to change before the first official release!**
+
 Everything is available through `#include <fam/fam.h>`. There are three pieces:
 
 - **`FamApu`**: the APU emulator. Takes register writes, produces samples.
@@ -155,7 +157,8 @@ See [`examples/sdl_demo`](examples/sdl_demo/sdl_demo.c) for a complete program u
 ### Rules worth knowing
 
 - **Memory:** `fam` never allocates. Every object lives in memory you provide, sized and aligned according to its `get_memory_required` / `get_memory_alignment`. `shutdown` doesn't free anything, the memory is still yours.
-- **Lifetimes:** A stream buffer must stay alive and unmodified for as long as its `FamMusic` / `FamSfx` handle is in use, including while it's playing.
+- **Lifetimes:** A stream buffer must stay alive and unmodified for as long as its `FamMusic` / `FamSfx` handle is in use, including while it's playing. The player only references a stream while it's playing: once the call that stops, replaces or finishes it returns, the buffer is never touched again.
+- **Freeing a stream while audio is running:** Stop it on the thread that owns the player, and wait until that has happened before freeing it. Use `fam_player_get_music` / `fam_player_get_sfx` to check that the stream you're releasing is still the one playing, so you don't stop something else that replaced it. The SDL demo shows how to do this with a command queue.
 - **Errors:** Functions that take data from outside the library (`fam_music_from_buffer`, `fam_sfx_from_buffer`, `fam_apu_init`, `fam_player_init`) validate it and return a `FamResult`. Everything else expects valid handles and only checks them with `assert` in debug builds.
 - **Threading:** No internal locking. Only call a player from one thread at a time.
 - **Ownership:** Once an APU is attached to a player, don't write to it directly.

@@ -183,6 +183,18 @@ int main(int argc, char **argv) {
 
     getchar();
 
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_STOP, NULL);
+
+    // Wait for music to stop before it can be safely freed
+    // Of course, if the music hasn't started by this point yet it would give a false positive,
+    // so this naive approach is likely not good for a real project
+    while (fam_player_get_music(player) != NULL) {
+        SDL_Delay(1);
+    }
+    SDL_free(file_data);
+
+    SDL_Delay(1000);
+
     SDL_DestroyAudioStream(stream);
     SDL_Quit();
 
@@ -191,7 +203,6 @@ int main(int argc, char **argv) {
 
     SDL_aligned_free(player_memory);
     SDL_aligned_free(apu_memory);
-    SDL_free(file_data);
 
     return 0;
 }

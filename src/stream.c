@@ -82,16 +82,15 @@ static FamResult validate_music(const StreamInfo* info) {
     return FAM_SUCCESS;
 }
 
-// A sound effect claims at most one channel
-// An empty mask is allowed, but won't do anything
+// A sound effect claims exactly one channel
 static FamResult validate_sfx(const StreamInfo* info) {
     FamResult result = validate_common(info, STREAM_USAGE_SFX);
     if (result != FAM_SUCCESS) {
         return result;
     }
 
-    // More than one bit set
-    if (info->channel_mask != 0 && (info->channel_mask & (info->channel_mask - 1)) != 0) {
+    // No bits or more than one bit set
+    if (info->channel_mask == 0 || (info->channel_mask & (info->channel_mask - 1)) != 0) {
         return FAM_ERROR_INVALID_FORMAT;
     }
 
@@ -152,4 +151,16 @@ FamResult fam_sfx_from_buffer(const FamSfx** out_sfx, size_t buffer_size, const 
 FamRegion fam_sfx_get_region(const FamSfx* sfx) {
     assert(sfx != NULL);
     return (FamRegion)((const uint8_t*)sfx)[STREAM_HEADER_FIELD_REGION];
+}
+
+FamChannel fam_sfx_get_channel(const FamSfx* sfx) {
+    assert(sfx != NULL);
+    const uint64_t channel_mask = read_u64_le((const uint8_t*)sfx + STREAM_HEADER_FIELD_CHANNEL_MASK);
+
+    // Validated at load time to have exactly one bit set
+    int channel = 0;
+    while ((channel_mask >> channel & 1) == 0) {
+        channel++;
+    }
+    return (FamChannel)channel;
 }
