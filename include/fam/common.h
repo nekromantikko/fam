@@ -48,3 +48,13 @@ typedef enum {
 typedef enum {
     FAM_AUDIO_F32 = 0,
 } FamAudioFormat;
+
+// Values match the channel bit indices in the stream format, so they never change
+// Expansion audio channels will be appended after FAM_CHANNEL_DMC
+typedef enum {
+    FAM_CHANNEL_PULSE1      = 0,
+    FAM_CHANNEL_PULSE2      = 1,
+    FAM_CHANNEL_TRIANGLE    = 2,
+    FAM_CHANNEL_NOISE       = 3,
+    FAM_CHANNEL_DMC         = 4,
+} FamChannel;
