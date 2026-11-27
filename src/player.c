@@ -36,6 +36,8 @@ struct FamPlayer {
 
     const FamTrack* music;
     MusicState music_state;
+    // Starts when the current music ends by itself. Never set while no music is playing
+    const FamTrack* queued_music;
 
     // Shadow state to track the music's "real" register state
     uint8_t reserve_pulse1[4];
@@ -171,6 +173,54 @@ static uint32_t player_track_get_delta(const uint8_t* pos) {
     return ((uint32_t)pos[2] | (uint32_t)pos[3] << 8) + 1;
 }
 
+static FamResult player_check_music(const FamPlayer* player, const FamTrack* music) {
+    if (fam_track_get_usage(music) != FAM_TRACK_USAGE_MUSIC) {
+        return FAM_ERROR_USAGE_MISMATCH;
+    }
+
+    // Should I allow mismatching regions here? It would sound wrong, but not break anything...
+    if (fam_track_get_region(music) != fam_apu_get_region(player->apu)) {
+        return FAM_ERROR_REGION_MISMATCH;
+    }
+
+    return FAM_SUCCESS;
+}
+
+// Starts the music from the beginning, replacing the current music and clearing the queue.
+// The music must have passed player_check_music
+static void player_start_music(FamPlayer* player, const FamTrack* music) {
+    const TrackInfo info = track_get_info((const uint8_t*)music);
+
+    player->music = music;
+    player->queued_music = NULL;
+
+    player->music_state.channel_mask = info.channel_mask;
+    player->music_state.dpcm_bank_count = info.music_dpcm_bank_count;
+
+    player->music_state.data_begin = (const uint8_t*)music + (size_t)info.op_data_offset;
+    player->music_state.data_end = player->music_state.data_begin + info.op_data_size;
+    player->music_state.data_pos = player->music_state.data_begin;
+
+    // A zero loop_offset means no looping
+    player->music_state.data_loop = info.music_loop_offset ? (const uint8_t*)music + info.music_loop_offset : NULL;
+    player->music_state.cycles_remaining = 0;
+
+    player->music_state.dpcm_bank_data_begin = (const uint8_t*)music + info.music_dpcm_bank_data_offset;
+
+    if (info.music_dpcm_bank_count > 0) {
+        player_switch_music_dpcm_bank(player, 0);
+    } else {
+        player->music_state.current_dpcm_bank_data = NULL;
+    }
+
+    player->music_state.paused = false;
+
+    // Reset reserve state
+    player_clear_reserve(player);
+
+    player_update_status_register(player, true);
+}
+
 static void player_process_music(FamPlayer* player, uint32_t cycles) {
     if (player->music == NULL) {
         return;
@@ -192,7 +242,15 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
     if (state->data_pos >= state->data_end) {
         // End of song reached
         if (state->data_loop == NULL) {
+            // Stopping clears the queue, so take the queued music first
+            const FamTrack* next = player->queued_music;
             fam_player_stop_music(player);
+
+            if (next != NULL) {
+                // Checked when it was queued. With cycles_remaining at 0, fam_player_run
+                // processes its first op on the very same cycle, so there's no gap
+                player_start_music(player, next);
+            }
             return;
         }
 
@@ -491,46 +549,40 @@ FamResult fam_player_play_music(FamPlayer* player, const FamTrack* music) {
     assert(player != NULL);
     assert(music != NULL);
 
-    const TrackInfo info = track_get_info((const uint8_t*)music);
-
-    if (info.usage != FAM_TRACK_USAGE_MUSIC) {
-        return FAM_ERROR_USAGE_MISMATCH;
+    const FamResult result = player_check_music(player, music);
+    if (result != FAM_SUCCESS) {
+        return result;
     }
 
-    // Should I allow mismatching regions here? It would sound wrong, but not break anything...
-    if (info.region != fam_apu_get_region(player->apu)) {
-        return FAM_ERROR_REGION_MISMATCH;
+    player_start_music(player, music);
+    return FAM_SUCCESS;
+}
+
+FamResult fam_player_queue_music(FamPlayer* player, const FamTrack* music) {
+    assert(player != NULL);
+
+    if (music == NULL) {
+        player->queued_music = NULL;
+        return FAM_SUCCESS;
     }
 
-    player->music = music;
+    const FamResult result = player_check_music(player, music);
+    if (result != FAM_SUCCESS) {
+        return result;
+    }
 
-    player->music_state.channel_mask = info.channel_mask;
-    player->music_state.dpcm_bank_count = info.music_dpcm_bank_count;
-
-    player->music_state.data_begin = (const uint8_t*)music + (size_t)info.op_data_offset;
-    player->music_state.data_end = player->music_state.data_begin + info.op_data_size;
-    player->music_state.data_pos = player->music_state.data_begin;
-
-    // A zero loop_offset means no looping
-    player->music_state.data_loop = info.music_loop_offset ? (const uint8_t*)music + info.music_loop_offset : NULL;
-    player->music_state.cycles_remaining = 0;
-
-    player->music_state.dpcm_bank_data_begin = (const uint8_t*)music + info.music_dpcm_bank_data_offset;
-
-    if (info.music_dpcm_bank_count > 0) {
-        player_switch_music_dpcm_bank(player, 0);
+    if (player->music == NULL) {
+        player_start_music(player, music);
     } else {
-        player->music_state.current_dpcm_bank_data = NULL;
+        player->queued_music = music;
     }
-
-    player->music_state.paused = false;
-
-    // Reset reserve state
-    player_clear_reserve(player);
-
-    player_update_status_register(player, true);
 
     return FAM_SUCCESS;
+}
+
+const FamTrack* fam_player_get_queued_music(const FamPlayer* player) {
+    assert(player != NULL);
+    return player->queued_music;
 }
 
 void fam_player_pause_music(FamPlayer* player) {
@@ -562,6 +614,8 @@ void fam_player_resume_music(FamPlayer* player) {
 
 void fam_player_stop_music(FamPlayer* player) {
     assert(player != NULL);
+
+    player->queued_music = NULL;
 
     if (player->music == NULL) {
         return;
@@ -649,4 +703,23 @@ const FamTrack* fam_player_get_sfx(const FamPlayer* player, FamChannel channel) 
     }
 
     return player->sfx[channel];
+}
+
+void fam_player_stop_track(FamPlayer* player, const FamTrack* track) {
+    assert(player != NULL);
+    assert(track != NULL);
+
+    if (player->queued_music == track) {
+        player->queued_music = NULL;
+    }
+
+    if (player->music == track) {
+        fam_player_stop_music(player);
+    }
+
+    for (int i = 0; i < SFX_CHANNEL_COUNT; i++) {
+        if (player->sfx[i] == track) {
+            player_release_sfx(player, i);
+        }
+    }
 }

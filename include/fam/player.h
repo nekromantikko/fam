@@ -25,13 +25,23 @@ FAM_API FamResult FAM_CALL fam_player_init(FamPlayer** out_player, void* memory,
 FAM_API void FAM_CALL fam_player_shutdown(FamPlayer* player);
 FAM_API void FAM_CALL fam_player_run(FamPlayer* player, size_t sample_count, void* out_samples);
 
-// The player only references a track's buffer while that track is playing. Once the call
-// that ends it returns (a stop, replacing it with another track, or reaching its end during
+// The player only references a track's buffer while that track is playing or queued. Once the
+// call that ends it returns (a stop, replacing it with another track, or reaching its end during
 // fam_player_run), the player never touches that buffer again.
-// To free a track from another thread while audio is running, stop it on the thread that owns
-// the player, and only free it after that has happened. See examples/sdl_demo.
+// To free a track while audio is running, call fam_player_stop_track on the thread that owns the
+// player, and only free the buffer after that call has returned. Don't read player state from
+// another thread to find out, see examples/sdl_demo for one way to get an acknowledgement back.
 
+// Starts the music from the beginning, replacing the current music and clearing the queue
 FAM_API FamResult FAM_CALL fam_player_play_music(FamPlayer* player, const FamTrack* music);
+// Starts the music when the current music ends by itself, with no gap. Looping music never ends
+// by itself, so music queued after it never starts (see fam_track_has_loop).
+// Starts immediately if no music is playing. Replaces anything already queued, and NULL clears the queue.
+// fam_player_play_music, fam_player_stop_music and fam_player_stop_track also clear the queue.
+// Checks the track the same way as fam_player_play_music, so errors are reported when queueing
+FAM_API FamResult FAM_CALL fam_player_queue_music(FamPlayer* player, const FamTrack* music);
+// Returns NULL if no music is queued
+FAM_API const FamTrack* FAM_CALL fam_player_get_queued_music(const FamPlayer* player);
 FAM_API void FAM_CALL fam_player_pause_music(FamPlayer* player);
 FAM_API void FAM_CALL fam_player_resume_music(FamPlayer* player);
 FAM_API void FAM_CALL fam_player_stop_music(FamPlayer* player);
@@ -49,6 +59,11 @@ FAM_API void FAM_CALL fam_player_stop_all_sfx(FamPlayer* player);
 // or for FAM_CHANNEL_NONE
 // Safe to call with any track: fam_player_get_sfx(player, fam_track_get_sfx_channel(track)) == track
 FAM_API const FamTrack* FAM_CALL fam_player_get_sfx(const FamPlayer* player, FamChannel channel);
+
+// Stops the track wherever the player references it: as the music, as the queued music, and on any
+// sound effect channel. Does nothing if the track isn't in use. Stopping the music this way also
+// clears the queue, like fam_player_stop_music. Once this returns, the track's buffer can be freed
+FAM_API void FAM_CALL fam_player_stop_track(FamPlayer* player, const FamTrack* track);
 
 #ifdef __cplusplus
 }

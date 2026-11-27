@@ -12,7 +12,9 @@ typedef enum {
     CMD_MUSIC_PAUSE,
     CMD_MUSIC_RESUME,
     CMD_MUSIC_STOP,
+    CMD_MUSIC_QUEUE,
     CMD_SFX_PLAY,
+    CMD_TRACK_STOP,
 } PlayerCommandType;
 
 typedef struct PlayerCommand {
@@ -21,10 +23,14 @@ typedef struct PlayerCommand {
 } PlayerCommand;
 
 // SPSC ring buffer, producer increments tail, consumer increments head
+// Every command gets a sequence number (the value of tail after pushing it). Once the consumer has
+// executed commands, it publishes how many in processed, so the producer can wait for a specific
+// command to take effect without ever reading the player from its own thread.
 typedef struct CommandBuffer {
     PlayerCommand buffer[CMD_BUFFER_CAPACITY];
     SDL_AtomicU32 head;
     SDL_AtomicU32 tail;
+    SDL_AtomicU32 processed;
 } CommandBuffer;
 
 typedef struct CallbackData {
@@ -32,7 +38,8 @@ typedef struct CallbackData {
     CommandBuffer* cmd_buffer;
 } CallbackData;
 
-static bool cmd_buffer_push(CommandBuffer* cb, PlayerCommandType type, const void* ptr) {
+// out_seq is optional, and receives the command's sequence number for cmd_buffer_wait
+static bool cmd_buffer_push(CommandBuffer* cb, PlayerCommandType type, const void* ptr, uint32_t* out_seq) {
     uint32_t tail = cb->tail.value;
     uint32_t head = SDL_GetAtomicU32(&cb->head);
 
@@ -44,7 +51,16 @@ static bool cmd_buffer_push(CommandBuffer* cb, PlayerCommandType type, const voi
     };
     cb->buffer[tail & (CMD_BUFFER_CAPACITY - 1)] = cmd;
     SDL_SetAtomicU32(&cb->tail, tail + 1);
+    if (out_seq) *out_seq = tail + 1;
     return true;
+}
+
+// Blocks until the audio thread has executed the command with this sequence number
+static void cmd_buffer_wait(CommandBuffer* cb, uint32_t seq) {
+    // Signed difference, so this keeps working when the counters wrap around
+    while ((int32_t)(SDL_GetAtomicU32(&cb->processed) - seq) < 0) {
+        SDL_Delay(1);
+    }
 }
 
 static bool cmd_buffer_pop(CommandBuffer* cb, PlayerCommand* out_cmd) {
@@ -79,13 +95,22 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
             case CMD_MUSIC_STOP:
                 fam_player_stop_music(player);
                 break;
+            case CMD_MUSIC_QUEUE:
+                fam_player_queue_music(player, (const FamTrack*)cmd.ptr);
+                break;
             case CMD_SFX_PLAY:
                 fam_player_play_sfx(player, (const FamTrack*)cmd.ptr);
+                break;
+            case CMD_TRACK_STOP:
+                fam_player_stop_track(player, (const FamTrack*)cmd.ptr);
                 break;
             default:
                 break;
         }
     }
+
+    // Everything popped so far has now taken effect
+    SDL_SetAtomicU32(&cmd_buffer->processed, cmd_buffer->head.value);
 }
 
 static void audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
@@ -156,6 +181,7 @@ int main(int argc, char **argv) {
     CommandBuffer cmd_buffer;
     cmd_buffer.head.value = 0;
     cmd_buffer.tail.value = 0;
+    cmd_buffer.processed.value = 0;
 
     CallbackData callback_data = {
         .player = player,
@@ -184,18 +210,17 @@ int main(int argc, char **argv) {
     printf("Playing %s (%s)...\n", argv[1], fam_track_get_region(music) == FAM_REGION_PAL ? "PAL" : "NTSC");
     printf("Press Enter to quit.\n");
 
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);
+    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music, NULL);
 
     getchar();
 
-    cmd_buffer_push(&cmd_buffer, CMD_MUSIC_STOP, NULL);
-
-    // Wait for music to stop before it can be safely freed
-    // Of course, if the music hasn't started by this point yet it would give a false positive,
-    // so this naive approach is likely not good for a real project
-    while (fam_player_get_music(player) != NULL) {
-        SDL_Delay(1);
+    // Make sure the player no longer references the track, then wait until that has actually
+    // happened on the audio thread before freeing it. The main thread never reads the player
+    uint32_t stop_seq;
+    while (!cmd_buffer_push(&cmd_buffer, CMD_TRACK_STOP, music, &stop_seq)) {
+        SDL_Delay(1); // Buffer full, the audio thread will drain it
     }
+    cmd_buffer_wait(&cmd_buffer, stop_seq);
     SDL_free(file_data);
 
     SDL_Delay(1000);
