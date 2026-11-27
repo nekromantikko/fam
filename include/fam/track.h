@@ -2,6 +2,7 @@
 #include <fam/common.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 typedef enum {
     FAM_TRACK_USAGE_MUSIC = 0,
@@ -21,6 +22,9 @@ FAM_API FamTrackUsage FAM_CALL fam_track_get_usage(const FamTrack* track);
 FAM_API uint64_t FAM_CALL fam_track_get_channel_bits(const FamTrack* track);
 // Calling this with a music track results in FAM_CHANNEL_NONE
 FAM_API FamChannel FAM_CALL fam_track_get_sfx_channel(const FamTrack* track);
+// True if the track loops forever until stopped. False for sound effects, and for music
+// that ends by itself (fam_player_get_music_state then becomes FAM_PLAYBACK_STOPPED)
+FAM_API bool FAM_CALL fam_track_has_loop(const FamTrack* track);
 
 #ifdef __cplusplus
 }
