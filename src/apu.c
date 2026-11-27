@@ -710,22 +710,39 @@ static inline float apu_dc_block(FamApu* apu, float x) {
     return y;
 }
 
-// Integrates the delta buffer and outputs samples
+// Quantizes only at the very end, after all the filtering, so S16 output loses nothing
+// compared to F32 apart from the final rounding.
+// The mix peaks around 1.0, the DC block makes it bipolar and BLEP ringing can overshoot,
+// so it's clamped. Rounds half away from zero by hand, since lrintf would need libm
+static inline int16_t f32_to_s16(float x) {
+    float scaled = x * 32767.0f;
+    if (scaled > 32767.0f) {
+        scaled = 32767.0f;
+    } else if (scaled < -32768.0f) {
+        scaled = -32768.0f;
+    }
+    return (int16_t)(scaled + (scaled >= 0.0f ? 0.5f : -0.5f));
+}
+
+// Integrates the delta buffer and outputs samples in the APU's format
 // Drained buffer slots are cleared afterwards
 // NOTE: count must not make the read position exceed buffer size
-static inline size_t apu_drain_samples(FamApu* apu, size_t count, float* out_samples) {
-    size_t samples_processed = 0;
+static inline size_t apu_drain_samples(FamApu* apu, size_t count, void* out_samples) {
+    float* const out_f32 = (out_samples && apu->format == FAM_AUDIO_F32) ? (float*)out_samples : NULL;
+    int16_t* const out_s16 = (out_samples && apu->format == FAM_AUDIO_S16) ? (int16_t*)out_samples : NULL;
+
     for (size_t i = 0; i < count; i++) {
         apu->delta_accumulator += apu->delta_buffer[apu->delta_read_pos];
         apu->delta_buffer[apu->delta_read_pos++] = 0.0f;
         // DC block is a recursive filter, so it needs to run for all samples regardless of output
         const float sample = apu_dc_block(apu, apu->delta_accumulator);
-        if (out_samples) {
-            out_samples[i] = sample;
+        if (out_f32) {
+            out_f32[i] = sample;
+        } else if (out_s16) {
+            out_s16[i] = f32_to_s16(sample);
         }
-        samples_processed++;
     }
-    return samples_processed;
+    return count;
 }
 
 size_t fam_apu_get_memory_required(void) {
@@ -745,8 +762,7 @@ FamResult fam_apu_init(FamApu** out_apu, void* memory, const FamApuConfig* confi
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
-    // TODO: Other output formats
-    if (config->format < 0 || config->format > FAM_AUDIO_F32) {
+    if (config->format < 0 || config->format > FAM_AUDIO_S16) {
         return FAM_ERROR_INVALID_ARGUMENT;
     }
 
@@ -957,15 +973,15 @@ size_t fam_apu_run(FamApu* apu, size_t cycles, void* out_samples) {
 
     size_t samples_processed = 0;
 
-    // TODO: Other output formats
-    float* samples_float = (float*)out_samples;
+    uint8_t* const out_bytes = (uint8_t*)out_samples;
+    const size_t sample_size = fam_apu_get_sample_size(apu);
 
     for (size_t i = 0; i < cycles; i++) {
         uint64_t next_delta_write_pos = apu->delta_write_pos_fixed + apu->delta_increment;
         // Roll delta buffer if needed
         if (next_delta_write_pos >= (uint64_t)DELTA_BUFFER_SIZE << 32) {
-            samples_processed += apu_drain_samples(apu, DELTA_BUFFER_SIZE - apu->delta_read_pos, 
-                out_samples ? samples_float + samples_processed : NULL);
+            samples_processed += apu_drain_samples(apu, DELTA_BUFFER_SIZE - apu->delta_read_pos,
+                out_bytes ? out_bytes + samples_processed * sample_size : NULL);
             apu->delta_read_pos = 0;
             
             // Move BLEP kernel tail to front
@@ -994,8 +1010,8 @@ size_t fam_apu_run(FamApu* apu, size_t cycles, void* out_samples) {
         apu->delta_write_pos_fixed = next_delta_write_pos;
     }
 
-    samples_processed += apu_drain_samples(apu, (apu->delta_write_pos_fixed >> 32) - apu->delta_read_pos, 
-        out_samples ? samples_float + samples_processed : NULL);
+    samples_processed += apu_drain_samples(apu, (apu->delta_write_pos_fixed >> 32) - apu->delta_read_pos,
+        out_bytes ? out_bytes + samples_processed * sample_size : NULL);
     return samples_processed;
 }
 
@@ -1007,11 +1023,11 @@ double fam_apu_get_clock_rate(const FamApu* apu) {
 size_t fam_apu_get_sample_size(const FamApu* apu) {
     assert(apu != NULL);
 
-    // TODO: Other output formats
-    if (apu->format == FAM_AUDIO_F32) {
-        return sizeof(float);
+    switch (apu->format) {
+        case FAM_AUDIO_F32: return sizeof(float);
+        case FAM_AUDIO_S16: return sizeof(int16_t);
+        default: return 0;
     }
-    return 0;
 }
 
 size_t fam_apu_get_cycles_for_samples(const FamApu* apu, size_t sample_count) {

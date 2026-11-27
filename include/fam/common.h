@@ -46,8 +46,10 @@ typedef enum {
     FAM_REGION_PAL  = 1,
 } FamRegion;
 
+// Samples are mono, in native byte order. Full scale is [-1.0, 1.0] for F32 and [-32768, 32767] for S16
 typedef enum {
     FAM_AUDIO_F32 = 0,
+    FAM_AUDIO_S16 = 1,
 } FamAudioFormat;
 
 typedef enum {
