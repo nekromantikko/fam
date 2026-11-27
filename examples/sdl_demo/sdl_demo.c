@@ -68,7 +68,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
 
         switch(cmd.type) {
             case CMD_MUSIC_PLAY:
-                fam_player_play_music(player, (const FamMusic*)cmd.ptr);
+                fam_player_play_music(player, (const FamTrack*)cmd.ptr);
                 break;
             case CMD_MUSIC_PAUSE:
                 fam_player_pause_music(player);
@@ -80,7 +80,7 @@ static void process_player_commands(FamPlayer* player, CommandBuffer* cmd_buffer
                 fam_player_stop_music(player);
                 break;
             case CMD_SFX_PLAY:
-                fam_player_play_sfx(player, (const FamSfx*)cmd.ptr);
+                fam_player_play_sfx(player, (const FamTrack*)cmd.ptr);
                 break;
             default:
                 break;
@@ -119,17 +119,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const FamMusic* music;
-    FamResult err = fam_music_from_buffer(&music, file_size, file_data);
+    const FamTrack* music;
+    FamResult err = fam_track_from_buffer(&music, file_size, file_data);
     if (err != FAM_SUCCESS) {
         printf("Loading '%s' failed with error code %d\n", argv[1], err);
+        SDL_free(file_data);
+        return 1;
+    }
+    if (fam_track_get_usage(music) != FAM_TRACK_USAGE_MUSIC) {
+        printf("Track '%s' is not a music track\n", argv[1]);
         SDL_free(file_data);
         return 1;
     }
 
     void* apu_memory = SDL_aligned_alloc(fam_apu_get_memory_alignment(), fam_apu_get_memory_required());
     FamApuConfig apu_config = {
-        .region = fam_music_get_region(music),
+        .region = fam_track_get_region(music),
         .sample_rate = SAMPLE_RATE,
         .format = FAM_AUDIO_F32
     };
@@ -176,7 +181,7 @@ int main(int argc, char **argv) {
     }
 
     SDL_ResumeAudioStreamDevice(stream);
-    printf("Playing %s (%s)...\n", argv[1], fam_music_get_region(music) == FAM_REGION_PAL ? "PAL" : "NTSC");
+    printf("Playing %s (%s)...\n", argv[1], fam_track_get_region(music) == FAM_REGION_PAL ? "PAL" : "NTSC");
     printf("Press Enter to quit.\n");
 
     cmd_buffer_push(&cmd_buffer, CMD_MUSIC_PLAY, music);

@@ -20,11 +20,11 @@ This also means `fam` does no internal locking. A player (and its APU) must only
 
 ## Audio Format
 
-The built-in audio player uses a custom binary stream format for playing music and sound effects. A stream consists of 4-byte operations, which are mostly plain APU register write instructions with timing. See [`internal/fam/internal/stream.h`](internal/fam/internal/stream.h) for details. No converters ship yet, see Roadmap.
+The built-in audio player uses a custom binary track format for playing music and sound effects. A track consists of 4-byte operations, which are mostly plain APU register write instructions with timing. See [`internal/fam/internal/track.h`](internal/fam/internal/track.h) for details. No converters ship yet, see Roadmap.
 
-Streams are a flattened recording rather than a score: the region (NTSC or PAL) is baked in at export time, and a stream can only be played on an APU of the same region.
+Tracks are a flattened recording rather than a score: the region (NTSC or PAL) is baked in at export time, and a track can only be played on an APU of the same region.
 
-The stream format is versioned independently of the library. Every future version of `fam` will be able to play streams made for any earlier release.
+The track format is versioned independently of the library. Every future version of `fam` will be able to play tracks made for any earlier release.
 
 ## Output Format
 
@@ -115,8 +115,8 @@ target_link_libraries(my_game PRIVATE fam::fam)
 Everything is available through `#include <fam/fam.h>`. There are three pieces:
 
 - **`FamApu`**: the APU emulator. Takes register writes, produces samples.
-- **`FamMusic` / `FamSfx`**: read-only handles to stream data in your own buffer.
-- **`FamPlayer`**: drives an APU from a music stream and up to four sound effects.
+- **`FamTrack`**: a read-only handle to track data in your own buffer. A track is either music or a sound effect, see `fam_track_get_usage`.
+- **`FamPlayer`**: drives an APU from a music track and up to four sound effects.
 
 ### Minimal example
 
@@ -125,16 +125,16 @@ Everything is available through `#include <fam/fam.h>`. There are three pieces:
 
 // alloc_aligned(alignment, size) stands in for your allocator of choice
 
-// 1. Load a stream. This validates the buffer, nothing is copied
-const FamMusic* music;
-if (fam_music_from_buffer(&music, size, data) != FAM_SUCCESS) {
-    // Not a valid stream
+// 1. Load a track. This validates the buffer, nothing is copied
+const FamTrack* music;
+if (fam_track_from_buffer(&music, size, data) != FAM_SUCCESS) {
+    // Not a valid track
 }
 
 // 2. Initialize the APU in memory you provide
 void* apu_memory = alloc_aligned(fam_apu_get_memory_alignment(), fam_apu_get_memory_required());
 FamApuConfig config = {
-    .region = fam_music_get_region(music),
+    .region = fam_track_get_region(music),
     .sample_rate = 48000,
 };
 FamApu* apu;
@@ -157,12 +157,13 @@ See [`examples/sdl_demo`](examples/sdl_demo/sdl_demo.c) for a complete program u
 ### Rules worth knowing
 
 - **Memory:** `fam` never allocates. Every object lives in memory you provide, sized and aligned according to its `get_memory_required` / `get_memory_alignment`. `shutdown` doesn't free anything, the memory is still yours.
-- **Lifetimes:** A stream buffer must stay alive and unmodified for as long as its `FamMusic` / `FamSfx` handle is in use, including while it's playing. The player only references a stream while it's playing: once the call that stops, replaces or finishes it returns, the buffer is never touched again.
-- **Freeing a stream while audio is running:** Stop it on the thread that owns the player, and wait until that has happened before freeing it. Use `fam_player_get_music` / `fam_player_get_sfx` to check that the stream you're releasing is still the one playing, so you don't stop something else that replaced it. The SDL demo shows how to do this with a command queue.
-- **Errors:** Functions that take data from outside the library (`fam_music_from_buffer`, `fam_sfx_from_buffer`, `fam_apu_init`, `fam_player_init`) validate it and return a `FamResult`. Everything else expects valid handles and only checks them with `assert` in debug builds.
+- **Lifetimes:** A track buffer must stay alive and unmodified for as long as its `FamTrack` handle is in use, including while it's playing. The player only references a track while it's playing: once the call that stops, replaces or finishes it returns, the buffer is never touched again.
+- **Freeing a track while audio is running:** Stop it on the thread that owns the player, and wait until that has happened before freeing it. Use `fam_player_get_music` / `fam_player_get_sfx` to check that the track you're releasing is still the one playing, so you don't stop something else that replaced it. The SDL demo shows how to do this with a command queue.
+- **Errors:** Functions that take data from outside the library (`fam_track_from_buffer`, `fam_apu_init`, `fam_player_init`) validate it and return a `FamResult`. Everything else expects valid handles and only checks them with `assert` in debug builds.
 - **Threading:** No internal locking. Only call a player from one thread at a time.
 - **Ownership:** Once an APU is attached to a player, don't write to it directly.
-- **Region:** Playing a stream on an APU of the other region returns `FAM_ERROR_REGION_MISMATCH`.
+- **Region:** Playing a track on an APU of the other region returns `FAM_ERROR_REGION_MISMATCH`.
+- **Usage:** Passing a sound effect to `fam_player_play_music`, or music to `fam_player_play_sfx`, returns `FAM_ERROR_USAGE_MISMATCH`. `fam_track_get_sfx_channel` returns `FAM_CHANNEL_NONE` for music, and the player's channel functions accept it.
 - **Using the APU on its own:** `FamApu` can also be used without a player, by writing registers with `fam_apu_write_register` and generating samples with `fam_apu_run`. If you use the DMC, provide a sample reader with `fam_apu_set_dmc_reader`.
 
 ## Roadmap
@@ -176,13 +177,13 @@ See [`examples/sdl_demo`](examples/sdl_demo/sdl_demo.c) for a complete program u
  - [ ] Konami VRC7
  - [ ] Sunsoft 5B
 
-### Stream Format Converters
+### Track Format Converters
 
 A decision needs to be made about what source formats to support for conversion and whether the converters should live in the library or be separate tools. Converters for tracker formats require replicating their playback logic, and would be a lot to add to an otherwise minimalist library. A NSF converter requires a whole NES emulator. A VGM converter is much more straightforward, because it's already quite similar to `fam`'s own format.
 
 ### Tests
 
-The tests currently only cover APU emulation accuracy. Tests should be written to cover APU initialization, player and stream. A set of reference streams should also be added, to verify that streams from earlier releases keep playing correctly.
+The tests currently only cover APU emulation accuracy. Tests should be written to cover APU initialization, player and track. A set of reference tracks should also be added, to verify that tracks from earlier releases keep playing correctly.
 
 ## Credits
 

@@ -9,7 +9,7 @@ else()
     option(FAM_INSTALL "Generate install rules for fam" OFF)
 endif()
 
-add_library(fam src/apu.c src/player.c src/stream.c)
+add_library(fam src/apu.c src/player.c src/track.c)
 add_library(fam::fam ALIAS fam)
 
 include(GNUInstallDirs)

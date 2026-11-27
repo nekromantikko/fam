@@ -20,8 +20,8 @@
     #define FAM_CALL
 #endif
 
-// fam validates untrusted input at the trust boundary only. fam_music_from_buffer,
-// fam_sfx_from_buffer, fam_apu_init and fam_player_init check their arguments and report
+// fam validates untrusted input at the trust boundary only. fam_track_from_buffer,
+// fam_apu_init and fam_player_init check their arguments and report
 // through FamResult, because that data comes from outside the library and the caller
 // cannot know in advance that it is good.
 //
@@ -35,9 +35,10 @@ typedef enum {
     FAM_ERROR_WRITE_ONLY            = -3,
     FAM_ERROR_READ_ONLY             = -4,
     FAM_ERROR_REGION_MISMATCH       = -5,
-    FAM_ERROR_INVALID_FORMAT        = -6,
-    FAM_ERROR_UNSUPPORTED_VERSION   = -7,
-    FAM_ERROR_UNSUPPORTED_FEATURE   = -8,
+    FAM_ERROR_USAGE_MISMATCH        = -6,
+    FAM_ERROR_INVALID_FORMAT        = -7,
+    FAM_ERROR_UNSUPPORTED_VERSION   = -8,
+    FAM_ERROR_UNSUPPORTED_FEATURE   = -9,
 } FamResult;
 
 typedef enum {
@@ -49,12 +50,18 @@ typedef enum {
     FAM_AUDIO_F32 = 0,
 } FamAudioFormat;
 
-// Values match the channel bit indices in the stream format, so they never change
-// Expansion audio channels will be appended after FAM_CHANNEL_DMC
 typedef enum {
+    FAM_CHANNEL_NONE   = -1,
     FAM_CHANNEL_PULSE1      = 0,
     FAM_CHANNEL_PULSE2      = 1,
     FAM_CHANNEL_TRIANGLE    = 2,
     FAM_CHANNEL_NOISE       = 3,
     FAM_CHANNEL_DMC         = 4,
 } FamChannel;
+
+// Channel flag bits
+#define FAM_CHAN_BIT_PULSE1 (1ULL << FAM_CHANNEL_PULSE1)
+#define FAM_CHAN_BIT_PULSE2 (1ULL << FAM_CHANNEL_PULSE2)
+#define FAM_CHAN_BIT_TRIANGLE (1ULL << FAM_CHANNEL_TRIANGLE)
+#define FAM_CHAN_BIT_NOISE (1ULL << FAM_CHANNEL_NOISE)
+#define FAM_CHAN_BIT_DMC (1ULL << FAM_CHANNEL_DMC)
