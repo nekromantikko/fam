@@ -54,6 +54,13 @@ The library currently assumes a **little-endian** architecture. It *should* also
 
 An implementation capable of driving a single music track and up to four sound effects simultaneously, one per channel (pulses, triangle or noise). A sound effect takes over its channel for its duration, and when it ends or is stopped, the music is restored on that channel. Playing a sound effect on a channel that already has one playing replaces the old one.
 
+A music track can also be queued to start the moment the current one ends by itself, with no gap. This covers the classic pattern of a jingle interrupting the background music, which then starts again after it:
+
+```c
+fam_player_play_music(player, victory_jingle);
+fam_player_queue_music(player, overworld_theme);
+```
+
 ## Building
 
 `fam` uses CMake (3.22+) and any C11 compiler.
@@ -157,8 +164,8 @@ See [`examples/sdl_demo`](examples/sdl_demo/sdl_demo.c) for a complete program u
 ### Rules worth knowing
 
 - **Memory:** `fam` never allocates. Every object lives in memory you provide, sized and aligned according to its `get_memory_required` / `get_memory_alignment`. `shutdown` doesn't free anything, the memory is still yours.
-- **Lifetimes:** A track buffer must stay alive and unmodified for as long as its `FamTrack` handle is in use, including while it's playing. The player only references a track while it's playing: once the call that stops, replaces or finishes it returns, the buffer is never touched again.
-- **Freeing a track while audio is running:** Stop it on the thread that owns the player, and wait until that has happened before freeing it. Use `fam_player_get_music` / `fam_player_get_sfx` to check that the track you're releasing is still the one playing, so you don't stop something else that replaced it. The SDL demo shows how to do this with a command queue.
+- **Lifetimes:** A track buffer must stay alive and unmodified for as long as its `FamTrack` handle is in use, including while it's playing. The player only references a track while it's playing or queued: once the call that stops, replaces or finishes it returns, the buffer is never touched again.
+- **Freeing a track while audio is running:** Call `fam_player_stop_track` on the thread that owns the player. It stops the track wherever it's in use (music, queued music, or a sound effect) and leaves everything else alone. Free the buffer only once that call has returned. Don't find out by reading the player from your own thread, that's a data race: have the audio thread acknowledge it instead. The SDL demo does this by numbering its commands and publishing how many it has executed.
 - **Errors:** Functions that take data from outside the library (`fam_track_from_buffer`, `fam_apu_init`, `fam_player_init`) validate it and return a `FamResult`. Everything else expects valid handles and only checks them with `assert` in debug builds.
 - **Threading:** No internal locking. Only call a player from one thread at a time.
 - **Ownership:** Once an APU is attached to a player, don't write to it directly.
