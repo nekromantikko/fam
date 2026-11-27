@@ -51,6 +51,18 @@ FAM_API FamPlaybackState FAM_CALL fam_player_get_music_state(const FamPlayer* pl
 
 // Plays on the channel given by fam_track_get_sfx_channel, replacing any sound effect already playing there
 FAM_API FamResult FAM_CALL fam_player_play_sfx(FamPlayer* player, const FamTrack* sfx);
+// Like fam_player_play_sfx, with the frequency multiplied by pitch: 2.0 is an octave up, 0.5 an octave
+// down, 1.0 unchanged. For a shift in cents, pass powf(2.0f, cents / 1200.0f). Returns
+// FAM_ERROR_INVALID_ARGUMENT if pitch isn't greater than 0. The track itself is never modified,
+// the player shifts period values on their way to the APU, the way a real NES sound driver would:
+// - Pulse and triangle periods are rounded and clamped to the range the channel can play.
+// - Noise only has 16 periods, so the closest one is used and small shifts may not change it.
+// - A shifted sound effect never writes the high period register unless the track does, because
+//   that write restarts the note on hardware. If a slide or vibrato would need it, the period
+//   stops at the edge of the current range of 256 instead, until the track writes the high register.
+// - Like on hardware, shifting a low pulse note further down can get it muted by the sweep unit
+//   (period >= $400 with sweep shift 0 and negate off), even if the original wasn't.
+FAM_API FamResult FAM_CALL fam_player_play_sfx_pitched(FamPlayer* player, const FamTrack* sfx, float pitch);
 // Stops the sound effect on the channel, if any, and hands the channel back to the music
 // Does nothing for FAM_CHANNEL_NONE or a channel that can't play sound effects
 FAM_API void FAM_CALL fam_player_stop_sfx(FamPlayer* player, FamChannel channel);

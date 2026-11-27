@@ -2,6 +2,7 @@
 #include <fam/apu.h>
 #include <fam/track.h>
 #include <fam/internal/track.h>
+#include <fam/internal/apu_tables.h>
 #include <assert.h>
 #include <string.h>
 #include <stdalign.h>
@@ -29,6 +30,14 @@ typedef struct SfxState {
     uint32_t cycles_remaining;
 
     bool enabled; // Affects APU channel status but not channel ownership
+
+    // Pitch shift, see player_write_sfx_period. Period multiplier in UQ16.16 (1/pitch), 0 = unshifted
+    uint32_t period_scale;
+    // The period registers as the track wrote them (low byte, high register incl. length bits)
+    uint8_t track_period_lo;
+    uint8_t track_period_hi;
+    // The high period bits actually written to the hardware
+    uint8_t hw_period_hi;
 } SfxState;
 
 struct FamPlayer {
@@ -51,7 +60,19 @@ struct FamPlayer {
     SfxState sfx_state[SFX_CHANNEL_COUNT];
 
     uint8_t last_status_written;
+
+    // Last value the player wrote to each channel register $4000-$4013, like a real driver's
+    // shadow copy. Lets a pitched sound effect know the channel's current period before it writes one
+    uint8_t hw_registers[FAM_REGISTER_DMC_3 - FAM_REGISTER_PULSE1_0 + 1];
 };
+
+// Every register write the player makes goes through here
+static void player_apu_write(FamPlayer* player, uint16_t reg, uint8_t data) {
+    if (reg >= FAM_REGISTER_PULSE1_0 && reg <= FAM_REGISTER_DMC_3) {
+        player->hw_registers[reg - FAM_REGISTER_PULSE1_0] = data;
+    }
+    fam_apu_write_register(player->apu, reg, data);
+}
 
 static void player_clear_reserve(FamPlayer* player) {
     memset(player->reserve_pulse1, 0, 4);
@@ -67,34 +88,34 @@ static void player_clear_reserve(FamPlayer* player) {
 static void player_restore_reserve(FamPlayer* player, int channel) {
     switch(channel) {
         case FAM_CHANNEL_PULSE1:
-            fam_apu_write_register(player->apu, 0x4000, player->reserve_pulse1[0]);
-            fam_apu_write_register(player->apu, 0x4001, player->reserve_pulse1[1]);
-            fam_apu_write_register(player->apu, 0x4002, player->reserve_pulse1[2]);
-            fam_apu_write_register(player->apu, 0x4003, player->reserve_pulse1[3]);
+            player_apu_write(player, 0x4000, player->reserve_pulse1[0]);
+            player_apu_write(player, 0x4001, player->reserve_pulse1[1]);
+            player_apu_write(player, 0x4002, player->reserve_pulse1[2]);
+            player_apu_write(player, 0x4003, player->reserve_pulse1[3]);
             break;
         case FAM_CHANNEL_PULSE2:
-            fam_apu_write_register(player->apu, 0x4004, player->reserve_pulse2[0]);
-            fam_apu_write_register(player->apu, 0x4005, player->reserve_pulse2[1]);
-            fam_apu_write_register(player->apu, 0x4006, player->reserve_pulse2[2]);
-            fam_apu_write_register(player->apu, 0x4007, player->reserve_pulse2[3]);
+            player_apu_write(player, 0x4004, player->reserve_pulse2[0]);
+            player_apu_write(player, 0x4005, player->reserve_pulse2[1]);
+            player_apu_write(player, 0x4006, player->reserve_pulse2[2]);
+            player_apu_write(player, 0x4007, player->reserve_pulse2[3]);
             break;
         case FAM_CHANNEL_TRIANGLE:
-            fam_apu_write_register(player->apu, 0x4008, player->reserve_triangle[0]);
-            fam_apu_write_register(player->apu, 0x4009, player->reserve_triangle[1]);
-            fam_apu_write_register(player->apu, 0x400A, player->reserve_triangle[2]);
-            fam_apu_write_register(player->apu, 0x400B, player->reserve_triangle[3]);
+            player_apu_write(player, 0x4008, player->reserve_triangle[0]);
+            player_apu_write(player, 0x4009, player->reserve_triangle[1]);
+            player_apu_write(player, 0x400A, player->reserve_triangle[2]);
+            player_apu_write(player, 0x400B, player->reserve_triangle[3]);
             break;
         case FAM_CHANNEL_NOISE:
-            fam_apu_write_register(player->apu, 0x400C, player->reserve_noise[0]);
-            fam_apu_write_register(player->apu, 0x400D, player->reserve_noise[1]);
-            fam_apu_write_register(player->apu, 0x400E, player->reserve_noise[2]);
-            fam_apu_write_register(player->apu, 0x400F, player->reserve_noise[3]);
+            player_apu_write(player, 0x400C, player->reserve_noise[0]);
+            player_apu_write(player, 0x400D, player->reserve_noise[1]);
+            player_apu_write(player, 0x400E, player->reserve_noise[2]);
+            player_apu_write(player, 0x400F, player->reserve_noise[3]);
             break;
         case FAM_CHANNEL_DMC:
-            fam_apu_write_register(player->apu, 0x4010, player->reserve_dmc[0]);
-            fam_apu_write_register(player->apu, 0x4011, player->reserve_dmc[1]);
-            fam_apu_write_register(player->apu, 0x4012, player->reserve_dmc[2]);
-            fam_apu_write_register(player->apu, 0x4013, player->reserve_dmc[3]);
+            player_apu_write(player, 0x4010, player->reserve_dmc[0]);
+            player_apu_write(player, 0x4011, player->reserve_dmc[1]);
+            player_apu_write(player, 0x4012, player->reserve_dmc[2]);
+            player_apu_write(player, 0x4013, player->reserve_dmc[3]);
             break;
         default:
             break;
@@ -126,18 +147,18 @@ static void player_update_status_register(FamPlayer* player, bool force) {
                              : (status & ~FAM_CHAN_BIT_DMC) | (status_read & FAM_CHAN_BIT_DMC);
 
     if (force || to_write != player->last_status_written) {
-        fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, to_write);
+        player_apu_write(player, FAM_REGISTER_STATUS, to_write);
         player->last_status_written = to_write;
     }
 }
 
 static void player_silence_music(FamPlayer* player) {
     // Mute pulses and noise by setting volume to 0 ($4000, $4004, $400C)
-    if (player->sfx[FAM_CHANNEL_PULSE1] == NULL) fam_apu_write_register(player->apu, 0x4000, 0x30);
-    if (player->sfx[FAM_CHANNEL_PULSE2] == NULL) fam_apu_write_register(player->apu, 0x4004, 0x30);
-    if (player->sfx[FAM_CHANNEL_NOISE] == NULL) fam_apu_write_register(player->apu, 0x400C, 0x30);
+    if (player->sfx[FAM_CHANNEL_PULSE1] == NULL) player_apu_write(player, 0x4000, 0x30);
+    if (player->sfx[FAM_CHANNEL_PULSE2] == NULL) player_apu_write(player, 0x4004, 0x30);
+    if (player->sfx[FAM_CHANNEL_NOISE] == NULL) player_apu_write(player, 0x400C, 0x30);
     // Mute triangle by setting linear counter to 0 and halting ($4008)
-    if (player->sfx[FAM_CHANNEL_TRIANGLE] == NULL) fam_apu_write_register(player->apu, 0x4008, 0x80);
+    if (player->sfx[FAM_CHANNEL_TRIANGLE] == NULL) player_apu_write(player, 0x4008, 0x80);
 }
 
 static uint8_t player_dmc_callback(void* user_data, uint16_t addr) {
@@ -273,7 +294,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
                 int offset = opcode - OP_PULSE1_WRITE0;
                 player->reserve_pulse1[offset] = op_data;
                 if (player->sfx[FAM_CHANNEL_PULSE1] == NULL) {
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4000 + offset), op_data);
+                    player_apu_write(player, (uint16_t)(0x4000 + offset), op_data);
                 }
                 break;
             }
@@ -287,7 +308,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
                 int offset = opcode - OP_PULSE2_WRITE0;
                 player->reserve_pulse2[offset] = op_data;
                 if (player->sfx[FAM_CHANNEL_PULSE2] == NULL) {
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4004 + offset), op_data);
+                    player_apu_write(player, (uint16_t)(0x4004 + offset), op_data);
                 }
                 break;
             }
@@ -301,7 +322,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
                 int offset = opcode - OP_TRIANGLE_WRITE0;
                 player->reserve_triangle[offset] = op_data;
                 if (player->sfx[FAM_CHANNEL_TRIANGLE] == NULL) {
-                    fam_apu_write_register(player->apu, (uint16_t)(0x4008 + offset), op_data);
+                    player_apu_write(player, (uint16_t)(0x4008 + offset), op_data);
                 }
                 break;
             }
@@ -315,7 +336,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
                 int offset = opcode - OP_NOISE_WRITE0;
                 player->reserve_noise[offset] = op_data;
                 if (player->sfx[FAM_CHANNEL_NOISE] == NULL) {
-                    fam_apu_write_register(player->apu, (uint16_t)(0x400C + offset), op_data);
+                    player_apu_write(player, (uint16_t)(0x400C + offset), op_data);
                 }
                 break;
             }
@@ -328,7 +349,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
 
                 int offset = opcode - OP_DMC_WRITE0;
                 player->reserve_dmc[offset] = op_data;
-                fam_apu_write_register(player->apu, (uint16_t)(0x4010 + offset), op_data);
+                player_apu_write(player, (uint16_t)(0x4010 + offset), op_data);
                 break;
             }
         case OP_STATUS_WRITE:
@@ -373,6 +394,81 @@ static void player_release_sfx(FamPlayer* player, int channel) {
     }
 }
 
+// --- Sound effect pitch shift ---
+// Works like a real driver applying a pitch offset in code: the track stays untouched, and the
+// player transforms period values on their way to the APU.
+
+#define PERIOD_MAX 0x7FF
+// Below 8 the pulse channels are silenced by the hardware
+#define PULSE_PERIOD_MIN 8
+// Periods 0 and 1 make the triangle ultrasonic, which is heard as a pop
+#define TRIANGLE_PERIOD_MIN 2
+
+// Frequency is clock / (k * (t + 1)), so dividing the frequency by pitch means multiplying (t + 1)
+static uint16_t player_shift_period(uint16_t period, uint32_t scale, uint16_t min_period) {
+    const uint64_t scaled = (((uint64_t)period + 1) * scale + 0x8000) >> 16;
+    const uint64_t shifted = scaled > 0 ? scaled - 1 : 0;
+
+    if (shifted < min_period) return min_period;
+    if (shifted > PERIOD_MAX) return PERIOD_MAX;
+    return (uint16_t)shifted;
+}
+
+// The period is 11 bits split over two registers, and writing the high one has side effects
+// (pulse: phase reset, envelope restart and length reload; triangle: linear counter reload).
+// Tracks write only the low byte for slides and vibrato to avoid them. So a shifted sound effect
+// never writes the high register unless the track did: if the shifted period leaves the page the
+// hardware is on, the low byte saturates instead. The shifted sound effect then has exactly the
+// same hardware side effects as the original, at the cost of a pitch error while crossing a page.
+// Writing the low register has no side effects, so it's always written along with the high one.
+static void player_write_sfx_period(FamPlayer* player, SfxState* state, uint16_t base_reg, int offset, uint8_t data, uint16_t min_period) {
+    if (offset == 2) {
+        state->track_period_lo = data;
+    } else {
+        state->track_period_hi = data;
+    }
+
+    const uint16_t period = (uint16_t)((state->track_period_hi & 0x07) << 8 | state->track_period_lo);
+    const uint16_t shifted = player_shift_period(period, state->period_scale, min_period);
+    const uint8_t shifted_hi = (uint8_t)(shifted >> 8);
+
+    if (offset == 3) {
+        player_apu_write(player, (uint16_t)(base_reg + 2), (uint8_t)shifted);
+        // Keep the track's length counter load bits
+        player_apu_write(player, (uint16_t)(base_reg + 3), (uint8_t)((data & 0xF8) | shifted_hi));
+        state->hw_period_hi = shifted_hi;
+        return;
+    }
+
+    uint8_t lo = (uint8_t)shifted;
+    if (shifted_hi > state->hw_period_hi) {
+        lo = 0xFF;
+    } else if (shifted_hi < state->hw_period_hi) {
+        lo = 0x00;
+    }
+    player_apu_write(player, (uint16_t)(base_reg + 2), lo);
+}
+
+// Noise has 16 fixed periods, so the closest one is used. Closest by ratio rather than difference,
+// since pitch is perceived logarithmically. Coarse: small shifts usually keep the same period
+static uint8_t player_shift_noise_index(const uint16_t* periods, uint8_t index, uint32_t scale) {
+    // Target period in UQ16.16
+    const uint64_t target = (uint64_t)periods[index] * scale;
+
+    if (target <= (uint64_t)periods[0] << 16) return 0;
+    if (target >= (uint64_t)periods[15] << 16) return 15;
+
+    // The table is ascending: find the first period at or above the target, then pick between it
+    // and the one below. Closer in ratio means target is on that side of their geometric mean:
+    // target / lo < hi / target  <=>  target^2 < lo * hi. Both sides fit in 64 bits (< 2^54)
+    uint8_t hi = 1;
+    while (((uint64_t)periods[hi] << 16) < target) {
+        hi++;
+    }
+    const uint64_t lo_hi = ((uint64_t)periods[hi - 1] * periods[hi]) << 32;
+    return (target * target < lo_hi) ? (uint8_t)(hi - 1) : hi;
+}
+
 static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) {
     if (player->sfx[channel] == NULL) {
         return;
@@ -404,7 +500,11 @@ static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) 
                 if (channel != FAM_CHANNEL_PULSE1) break;
 
                 int offset = opcode - OP_PULSE1_WRITE0;
-                fam_apu_write_register(player->apu, (uint16_t)(0x4000 + offset), op_data);
+                if (state->period_scale != 0 && offset >= 2) {
+                    player_write_sfx_period(player, state, FAM_REGISTER_PULSE1_0, offset, op_data, PULSE_PERIOD_MIN);
+                    break;
+                }
+                player_apu_write(player, (uint16_t)(0x4000 + offset), op_data);
                 break;
             }
         case OP_PULSE2_WRITE0:
@@ -415,7 +515,11 @@ static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) 
                 if (channel != FAM_CHANNEL_PULSE2) break;
 
                 int offset = opcode - OP_PULSE2_WRITE0;
-                fam_apu_write_register(player->apu, (uint16_t)(0x4004 + offset), op_data);
+                if (state->period_scale != 0 && offset >= 2) {
+                    player_write_sfx_period(player, state, FAM_REGISTER_PULSE2_0, offset, op_data, PULSE_PERIOD_MIN);
+                    break;
+                }
+                player_apu_write(player, (uint16_t)(0x4004 + offset), op_data);
                 break;
             }
         case OP_TRIANGLE_WRITE0:
@@ -426,7 +530,11 @@ static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) 
                 if (channel != FAM_CHANNEL_TRIANGLE) break;
 
                 int offset = opcode - OP_TRIANGLE_WRITE0;
-                fam_apu_write_register(player->apu, (uint16_t)(0x4008 + offset), op_data);
+                if (state->period_scale != 0 && offset >= 2) {
+                    player_write_sfx_period(player, state, FAM_REGISTER_TRIANGLE_0, offset, op_data, TRIANGLE_PERIOD_MIN);
+                    break;
+                }
+                player_apu_write(player, (uint16_t)(0x4008 + offset), op_data);
                 break;
             }
         case OP_NOISE_WRITE0:
@@ -437,7 +545,13 @@ static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) 
                 if (channel != FAM_CHANNEL_NOISE) break;
 
                 int offset = opcode - OP_NOISE_WRITE0;
-                fam_apu_write_register(player->apu, (uint16_t)(0x400C + offset), op_data);
+                uint8_t data = op_data;
+                if (state->period_scale != 0 && offset == 2) {
+                    // Mode flag in bit 7 is kept, only the period index in bits 0-3 is shifted
+                    const uint16_t* periods = NOISE_PERIOD[fam_apu_get_region(player->apu)];
+                    data = (uint8_t)((op_data & 0xF0) | player_shift_noise_index(periods, op_data & 0x0F, state->period_scale));
+                }
+                player_apu_write(player, (uint16_t)(0x400C + offset), data);
                 break;
             }
         case OP_DMC_WRITE0:
@@ -490,7 +604,7 @@ FamResult fam_player_init(FamPlayer** out_player, void* memory, FamApu* apu) {
 
     fam_apu_set_dmc_reader(apu, player_dmc_callback, player);
     // 4-step sequence, disable IRQ
-    fam_apu_write_register(player->apu, FAM_REGISTER_FRAME_COUNTER, 0x40);
+    player_apu_write(player, FAM_REGISTER_FRAME_COUNTER, 0x40);
 
     // Init reserve state
     player_clear_reserve(player);
@@ -606,10 +720,10 @@ void fam_player_resume_music(FamPlayer* player) {
     player->music_state.paused = false;
 
     // Restore pulse and noise volume, triangle linear counter and halt
-    if (player->sfx[FAM_CHANNEL_PULSE1] == NULL) fam_apu_write_register(player->apu, 0x4000, player->reserve_pulse1[0]);
-    if (player->sfx[FAM_CHANNEL_PULSE2] == NULL) fam_apu_write_register(player->apu, 0x4004, player->reserve_pulse2[0]);
-    if (player->sfx[FAM_CHANNEL_TRIANGLE] == NULL) fam_apu_write_register(player->apu, 0x4008, player->reserve_triangle[0]);
-    if (player->sfx[FAM_CHANNEL_NOISE] == NULL) fam_apu_write_register(player->apu, 0x400C, player->reserve_noise[0]);
+    if (player->sfx[FAM_CHANNEL_PULSE1] == NULL) player_apu_write(player, 0x4000, player->reserve_pulse1[0]);
+    if (player->sfx[FAM_CHANNEL_PULSE2] == NULL) player_apu_write(player, 0x4004, player->reserve_pulse2[0]);
+    if (player->sfx[FAM_CHANNEL_TRIANGLE] == NULL) player_apu_write(player, 0x4008, player->reserve_triangle[0]);
+    if (player->sfx[FAM_CHANNEL_NOISE] == NULL) player_apu_write(player, 0x400C, player->reserve_noise[0]);
 }
 
 void fam_player_stop_music(FamPlayer* player) {
@@ -642,10 +756,8 @@ FamPlaybackState fam_player_get_music_state(const FamPlayer* player) {
     return player->music_state.paused ? FAM_PLAYBACK_PAUSED : FAM_PLAYBACK_PLAYING;
 }
 
-FamResult fam_player_play_sfx(FamPlayer* player, const FamTrack* sfx) {
-    assert(player != NULL);
-    assert(sfx != NULL);
-
+// period_scale is in UQ16.16, 0 means unshifted
+static FamResult player_play_sfx(FamPlayer* player, const FamTrack* sfx, uint32_t period_scale) {
     const TrackInfo info = track_get_info((const uint8_t*)sfx);
 
     if (info.usage != FAM_TRACK_USAGE_SFX) {
@@ -662,15 +774,58 @@ FamResult fam_player_play_sfx(FamPlayer* player, const FamTrack* sfx) {
 
     player->sfx[channel] = sfx;
 
-    player->sfx_state[channel].data_begin = (const uint8_t*)sfx + (size_t)info.op_data_offset;
-    player->sfx_state[channel].data_end = player->sfx_state[channel].data_begin + info.op_data_size;
-    player->sfx_state[channel].data_pos = player->sfx_state[channel].data_begin;
-    player->sfx_state[channel].cycles_remaining = 0;
-    player->sfx_state[channel].enabled = false;
+    SfxState* state = &player->sfx_state[channel];
+    memset(state, 0, sizeof(SfxState));
+    state->data_begin = (const uint8_t*)sfx + (size_t)info.op_data_offset;
+    state->data_end = state->data_begin + info.op_data_size;
+    state->data_pos = state->data_begin;
+
+    // Until the track writes its own period, it plays on whatever the channel's registers hold
+    // (left by the music or an earlier sound effect), so start from the hardware's current period.
+    // Channel registers are 4 apart in FamChannel order, so they're found by index
+    state->period_scale = period_scale;
+    state->track_period_lo = player->hw_registers[channel * 4 + 2];
+    state->track_period_hi = player->hw_registers[channel * 4 + 3];
+    state->hw_period_hi = state->track_period_hi & 0x07;
 
     player_update_status_register(player, false);
 
     return FAM_SUCCESS;
+}
+
+FamResult fam_player_play_sfx(FamPlayer* player, const FamTrack* sfx) {
+    assert(player != NULL);
+    assert(sfx != NULL);
+
+    return player_play_sfx(player, sfx, 0);
+}
+
+FamResult fam_player_play_sfx_pitched(FamPlayer* player, const FamTrack* sfx, float pitch) {
+    assert(player != NULL);
+    assert(sfx != NULL);
+
+    // Written this way round so NaN is rejected too
+    if (!(pitch > 0.0f)) {
+        return FAM_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Period multiplier 1/pitch in UQ16.16. Extremes clamp, the periods are clamped anyway
+    const double scale = 65536.0 / (double)pitch;
+    uint32_t period_scale;
+    if (scale < 1.0) {
+        period_scale = 1;
+    } else if (scale > (double)0x7FFFFFFF) {
+        period_scale = 0x7FFFFFFF;
+    } else {
+        period_scale = (uint32_t)(scale + 0.5);
+    }
+
+    // An exact 1.0 takes the unshifted path, so it writes exactly what fam_player_play_sfx would
+    if (period_scale == 0x10000) {
+        period_scale = 0;
+    }
+
+    return player_play_sfx(player, sfx, period_scale);
 }
 
 void fam_player_stop_sfx(FamPlayer* player, FamChannel channel) {
