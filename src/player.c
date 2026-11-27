@@ -1,7 +1,7 @@
 #include <fam/player.h>
 #include <fam/apu.h>
-#include <fam/stream.h>
-#include <fam/internal/stream.h>
+#include <fam/track.h>
+#include <fam/internal/track.h>
 #include <assert.h>
 #include <string.h>
 #include <stdalign.h>
@@ -34,7 +34,7 @@ typedef struct SfxState {
 struct FamPlayer {
     FamApu* apu;
 
-    const FamMusic* music;
+    const FamTrack* music;
     MusicState music_state;
 
     // Shadow state to track the music's "real" register state
@@ -45,7 +45,7 @@ struct FamPlayer {
     uint8_t reserve_dmc[4];
     uint8_t reserve_status;
 
-    const FamSfx* sfx[SFX_CHANNEL_COUNT];
+    const FamTrack* sfx[SFX_CHANNEL_COUNT];
     SfxState sfx_state[SFX_CHANNEL_COUNT];
 
     uint8_t last_status_written;
@@ -121,7 +121,7 @@ static void player_update_status_register(FamPlayer* player, bool force) {
     uint8_t status_read;
     fam_apu_read_register(player->apu, FAM_REGISTER_STATUS, &status_read);
     uint8_t to_write = force ? status
-                             : (status & ~CHAN_BIT_DMC) | (status_read & CHAN_BIT_DMC);
+                             : (status & ~FAM_CHAN_BIT_DMC) | (status_read & FAM_CHAN_BIT_DMC);
 
     if (force || to_write != player->last_status_written) {
         fam_apu_write_register(player->apu, FAM_REGISTER_STATUS, to_write);
@@ -163,7 +163,7 @@ static void player_switch_music_dpcm_bank(FamPlayer* player, uint8_t index) {
     player->music_state.current_dpcm_bank_data = player->music_state.dpcm_bank_data_begin + (size_t)index * MUSIC_DPCM_SAMPLE_BANK_SIZE;
 }
 
-static uint32_t player_stream_get_delta(const uint8_t* pos) {
+static uint32_t player_track_get_delta(const uint8_t* pos) {
     const uint8_t opcode = pos[0];
     if (opcode >= OP_WAIT) {
         return ((uint32_t)pos[1] | (uint32_t)pos[2] << 8 | (uint32_t)pos[3] << 16) + 1;
@@ -210,7 +210,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
         case OP_PULSE1_WRITE2:
         case OP_PULSE1_WRITE3:
             {
-                if ((state->channel_mask & CHAN_BIT_PULSE1) == 0) break;
+                if ((state->channel_mask & FAM_CHAN_BIT_PULSE1) == 0) break;
 
                 int offset = opcode - OP_PULSE1_WRITE0;
                 player->reserve_pulse1[offset] = op_data;
@@ -224,7 +224,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
         case OP_PULSE2_WRITE2:
         case OP_PULSE2_WRITE3:
             {
-                if ((state->channel_mask & CHAN_BIT_PULSE2) == 0) break;
+                if ((state->channel_mask & FAM_CHAN_BIT_PULSE2) == 0) break;
 
                 int offset = opcode - OP_PULSE2_WRITE0;
                 player->reserve_pulse2[offset] = op_data;
@@ -238,7 +238,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
         case OP_TRIANGLE_WRITE2:
         case OP_TRIANGLE_WRITE3:
             {
-                if ((state->channel_mask & CHAN_BIT_TRIANGLE) == 0) break;
+                if ((state->channel_mask & FAM_CHAN_BIT_TRIANGLE) == 0) break;
 
                 int offset = opcode - OP_TRIANGLE_WRITE0;
                 player->reserve_triangle[offset] = op_data;
@@ -252,7 +252,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
         case OP_NOISE_WRITE2:
         case OP_NOISE_WRITE3:
             {
-                if ((state->channel_mask & CHAN_BIT_NOISE) == 0) break;
+                if ((state->channel_mask & FAM_CHAN_BIT_NOISE) == 0) break;
 
                 int offset = opcode - OP_NOISE_WRITE0;
                 player->reserve_noise[offset] = op_data;
@@ -266,7 +266,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
         case OP_DMC_WRITE2:
         case OP_DMC_WRITE3:
             {
-                if ((state->channel_mask & CHAN_BIT_DMC) == 0) break;
+                if ((state->channel_mask & FAM_CHAN_BIT_DMC) == 0) break;
 
                 int offset = opcode - OP_DMC_WRITE0;
                 player->reserve_dmc[offset] = op_data;
@@ -278,7 +278,7 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
             player_update_status_register(player, true);
             break;
         case OP_SWITCH_SAMPLE_BANK:
-            if ((state->channel_mask & CHAN_BIT_DMC) == 0) break;
+            if ((state->channel_mask & FAM_CHAN_BIT_DMC) == 0) break;
 
             uint8_t bank_index = op_data;
 
@@ -298,8 +298,8 @@ static void player_process_music(FamPlayer* player, uint32_t cycles) {
             break;
     }
 
-    state->cycles_remaining = player_stream_get_delta(state->data_pos);
-    state->data_pos += STREAM_OP_SIZE;
+    state->cycles_remaining = player_track_get_delta(state->data_pos);
+    state->data_pos += TRACK_OP_SIZE;
 }
 
 // Ends the sound effect on the channel and hands the channel back to the music
@@ -400,8 +400,8 @@ static void player_process_sfx(FamPlayer* player, int channel, uint32_t cycles) 
             break;
     }
 
-    state->cycles_remaining = player_stream_get_delta(state->data_pos);
-    state->data_pos += STREAM_OP_SIZE;
+    state->cycles_remaining = player_track_get_delta(state->data_pos);
+    state->data_pos += TRACK_OP_SIZE;
 }
 
 static void player_process_cycles(FamPlayer* player, uint32_t cycles) {
@@ -487,11 +487,15 @@ void fam_player_run(FamPlayer* player, size_t sample_count, void* out_samples) {
     }
 }
 
-FamResult fam_player_play_music(FamPlayer* player, const FamMusic* music) {
+FamResult fam_player_play_music(FamPlayer* player, const FamTrack* music) {
     assert(player != NULL);
     assert(music != NULL);
 
-    const StreamInfo info = stream_get_info((const uint8_t*)music);
+    const TrackInfo info = track_get_info((const uint8_t*)music);
+
+    if (info.usage != FAM_TRACK_USAGE_MUSIC) {
+        return FAM_ERROR_USAGE_MISMATCH;
+    }
 
     // Should I allow mismatching regions here? It would sound wrong, but not break anything...
     if (info.region != fam_apu_get_region(player->apu)) {
@@ -569,7 +573,7 @@ void fam_player_stop_music(FamPlayer* player) {
     player_update_status_register(player, false);
 }
 
-const FamMusic* fam_player_get_music(const FamPlayer* player) {
+const FamTrack* fam_player_get_music(const FamPlayer* player) {
     assert(player != NULL);
     return player->music;
 }
@@ -584,19 +588,23 @@ FamPlaybackState fam_player_get_music_state(const FamPlayer* player) {
     return player->music_state.paused ? FAM_PLAYBACK_PAUSED : FAM_PLAYBACK_PLAYING;
 }
 
-FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
+FamResult fam_player_play_sfx(FamPlayer* player, const FamTrack* sfx) {
     assert(player != NULL);
     assert(sfx != NULL);
 
-    const StreamInfo info = stream_get_info((const uint8_t*)sfx);
+    const TrackInfo info = track_get_info((const uint8_t*)sfx);
+
+    if (info.usage != FAM_TRACK_USAGE_SFX) {
+        return FAM_ERROR_USAGE_MISMATCH;
+    }
 
     if (info.region != fam_apu_get_region(player->apu)) {
         return FAM_ERROR_REGION_MISMATCH;
     }
 
     // Validated at load time to be a single SFX-capable channel
-    const FamChannel channel = fam_sfx_get_channel(sfx);
-    assert(channel < SFX_CHANNEL_COUNT);
+    const FamChannel channel = fam_track_get_sfx_channel(sfx);
+    assert(channel >= 0 && channel < SFX_CHANNEL_COUNT);
 
     player->sfx[channel] = sfx;
 
@@ -613,9 +621,9 @@ FamResult fam_player_play_sfx(FamPlayer* player, const FamSfx* sfx) {
 
 void fam_player_stop_sfx(FamPlayer* player, FamChannel channel) {
     assert(player != NULL);
-    assert((unsigned)channel < CHANNEL_COUNT);
+    assert(channel == FAM_CHANNEL_NONE || (unsigned)channel < CHANNEL_COUNT);
 
-    if (channel >= SFX_CHANNEL_COUNT || player->sfx[channel] == NULL) {
+    if (channel == FAM_CHANNEL_NONE || channel >= SFX_CHANNEL_COUNT || player->sfx[channel] == NULL) {
         return;
     }
 
@@ -632,11 +640,11 @@ void fam_player_stop_all_sfx(FamPlayer* player) {
     }
 }
 
-const FamSfx* fam_player_get_sfx(const FamPlayer* player, FamChannel channel) {
+const FamTrack* fam_player_get_sfx(const FamPlayer* player, FamChannel channel) {
     assert(player != NULL);
-    assert((unsigned)channel < CHANNEL_COUNT);
+    assert(channel == FAM_CHANNEL_NONE || (unsigned)channel < CHANNEL_COUNT);
 
-    if (channel >= SFX_CHANNEL_COUNT) {
+    if (channel == FAM_CHANNEL_NONE || channel >= SFX_CHANNEL_COUNT) {
         return NULL;
     }
 

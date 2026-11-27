@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-// Stream format specification:
+// Track format specification:
 // Multi-byte fields are little-endian, all offsets are absolute
 // ZII, so that new fields can be added in subsequent versions without breaking backwards compatibility
 
@@ -34,17 +34,17 @@
 // Sound effect writes to other channels are completely ignored.
 // For music, writes to other channels are NOT ignored, but there's no output if the channels are not enabled.
 
-// Stream data consists of 4-byte operations. 
+// Track data consists of 4-byte operations. 
 // For all opcodes except for OP_WAIT, it's in the form:
 // 0x00         u8          opcode
 // 0x01         u8          data
 // 0x02-0x03    u16         duration (-1, in APU cycles. A duration of 0 cannot be expressed, it's always at least 1)
 
 // The duration is effectively the delta to the next operation. So it's the amount of APU cycles to wait before the next operation is processed.
-// In the case of the last operation in the stream, the duration is ignored, unless it's a looping song, 
+// In the case of the last operation in the track, the duration is ignored, unless it's a looping song, 
 // in which case the delta applies to the operation at music_loop_offset when the player jumps to it.
 // Because the value in the file is duration - 1, the effective range for the duration is [1, 65536]
-// This should be enough to express the waits between rows in tracker-authored streams (65536 APU cycles is ~73ms NTSC, ~79ms PAL)
+// This should be enough to express the waits between rows in tracker-authored tracks (65536 APU cycles is ~73ms NTSC, ~79ms PAL)
 
 // In the case where it's not enough, OP_WAIT can be used.
 // OP_WAIT is structured differently from other opcodes:
@@ -57,47 +57,39 @@
 
 // How to think of the duration conceptually (Why no zero deltas?):
 // A real NES running a game/audio driver has to execute code, and every instruction always takes some amount of actual time.
-// Similarly, when playing a stream, fam also has to execute code which takes actual time.
+// Similarly, when playing a track, fam also has to execute code which takes actual time.
 // If we were to pretend register writes can be done in zero time, 
 // we would run the risk of stalling the audio thread by executing an arbitrary number of zero-delta ops.
-// Conceptually, the stream operations are the output of some code that would run on an actual NES (Including all the unrelated gameplay code that also needs to be executed in between). 
+// Conceptually, the track operations are the output of some code that would run on an actual NES (Including all the unrelated gameplay code that also needs to be executed in between). 
 // There's no way for me to know how long that code would actually take to execute, so I can't set fixed durations for operations. 
-// Therefore I've left it up to the stream author to tell fam how long they should take.
+// Therefore I've left it up to the track author to tell fam how long they should take.
 // What I do know with certainty is that that time can never be zero.
 
-#define STREAM_MAGIC "FAM"
-#define STREAM_VERSION_MAJOR 1
-#define STREAM_VERSION_MINOR 0
+#define TRACK_MAGIC "FAM"
+#define TRACK_VERSION_MAJOR 1
+#define TRACK_VERSION_MINOR 0
 
-#define STREAM_HEADER_SIZE                                      0x40
-#define STREAM_HEADER_FIELD_MAGIC                               0x00
-#define STREAM_HEADER_FIELD_VERSION_MAJOR                       0x04
-#define STREAM_HEADER_FIELD_VERSION_MINOR                       0x06
-#define STREAM_HEADER_FIELD_USAGE                               0x08
-#define STREAM_HEADER_FIELD_REGION                              0x09
-#define STREAM_HEADER_FIELD_MUSIC_DPCM_BANK_COUNT               0x0A
-#define STREAM_HEADER_FIELD_MUSIC_DPCM_BANK_DATA_OFFSET         0x0C
-#define STREAM_HEADER_FIELD_EOF_OFFSET                          0x10
-#define STREAM_HEADER_FIELD_MUSIC_LOOP_OFFSET                   0x14
-#define STREAM_HEADER_FIELD_OP_COUNT                            0x18
-#define STREAM_HEADER_FIELD_OP_DATA_OFFSET                      0x1C
-#define STREAM_HEADER_FIELD_CHANNEL_MASK                        0x20
+#define TRACK_HEADER_SIZE                                      0x40
+#define TRACK_HEADER_FIELD_MAGIC                               0x00
+#define TRACK_HEADER_FIELD_VERSION_MAJOR                       0x04
+#define TRACK_HEADER_FIELD_VERSION_MINOR                       0x06
+#define TRACK_HEADER_FIELD_USAGE                               0x08
+#define TRACK_HEADER_FIELD_REGION                              0x09
+#define TRACK_HEADER_FIELD_MUSIC_DPCM_BANK_COUNT               0x0A
+#define TRACK_HEADER_FIELD_MUSIC_DPCM_BANK_DATA_OFFSET         0x0C
+#define TRACK_HEADER_FIELD_EOF_OFFSET                          0x10
+#define TRACK_HEADER_FIELD_MUSIC_LOOP_OFFSET                   0x14
+#define TRACK_HEADER_FIELD_OP_COUNT                            0x18
+#define TRACK_HEADER_FIELD_OP_DATA_OFFSET                      0x1C
+#define TRACK_HEADER_FIELD_CHANNEL_MASK                        0x20
 
-#define STREAM_OP_SIZE 4
+#define TRACK_OP_SIZE 4
 #define MUSIC_DPCM_SAMPLE_BANK_SIZE 0x4000 // 16 kB
 #define MUSIC_MAX_DPCM_BANK_COUNT 256 // Needs to be addressable with one byte
 
 // Channel indices are the public FamChannel values
 // Not public, because it grows when expansion audio channels are added
 #define CHANNEL_COUNT (FAM_CHANNEL_DMC + 1)
-
-typedef enum {
-    CHAN_BIT_PULSE1             = 1 << FAM_CHANNEL_PULSE1,
-    CHAN_BIT_PULSE2             = 1 << FAM_CHANNEL_PULSE2,
-    CHAN_BIT_TRIANGLE           = 1 << FAM_CHANNEL_TRIANGLE,
-    CHAN_BIT_NOISE              = 1 << FAM_CHANNEL_NOISE,
-    CHAN_BIT_DMC                = 1 << FAM_CHANNEL_DMC,
-} ChannelFlags;
 
 #define CHANNEL_MASK_SUPPORTED ((1ull << CHANNEL_COUNT) - 1)
 
@@ -138,16 +130,9 @@ typedef enum {
     OP_STATUS_WRITE         = 0x15,
 
     OP_WAIT                 = 0xFF, // 3 bytes of offset
-} StreamOpCode;
+} TrackOpCode;
 
-typedef enum {
-    STREAM_USAGE_MUSIC = 0,
-    STREAM_USAGE_SFX,
-
-    STREAM_USAGE_COUNT
-} StreamUsage;
-
-typedef struct StreamInfo {
+typedef struct TrackInfo {
     uint8_t usage;
     uint8_t region;
     uint16_t music_dpcm_bank_count;
@@ -162,7 +147,7 @@ typedef struct StreamInfo {
     size_t op_data_size; // Calculated helper field
 
     uint64_t channel_mask;
-} StreamInfo;
+} TrackInfo;
 
 // TODO: Move to utils?
 static inline uint16_t read_u16_le(const uint8_t* p) {
@@ -177,22 +162,22 @@ static inline uint64_t read_u64_le(const uint8_t* p) {
     return (uint64_t)read_u32_le(p) | (uint64_t)read_u32_le(p + 4) << 32;
 }
 
-static inline const StreamInfo stream_get_info(const uint8_t* buffer) {
-    const uint16_t bank_count = read_u16_le(buffer + STREAM_HEADER_FIELD_MUSIC_DPCM_BANK_COUNT);
-    const uint32_t op_count = read_u32_le(buffer + STREAM_HEADER_FIELD_OP_COUNT);
+static inline TrackInfo track_get_info(const uint8_t* buffer) {
+    const uint16_t bank_count = read_u16_le(buffer + TRACK_HEADER_FIELD_MUSIC_DPCM_BANK_COUNT);
+    const uint32_t op_count = read_u32_le(buffer + TRACK_HEADER_FIELD_OP_COUNT);
     
-    const StreamInfo info = {
-        .usage = buffer[STREAM_HEADER_FIELD_USAGE],
-        .region = buffer[STREAM_HEADER_FIELD_REGION],
+    const TrackInfo info = {
+        .usage = buffer[TRACK_HEADER_FIELD_USAGE],
+        .region = buffer[TRACK_HEADER_FIELD_REGION],
         .music_dpcm_bank_count = bank_count,
-        .music_dpcm_bank_data_offset = read_u32_le(buffer + STREAM_HEADER_FIELD_MUSIC_DPCM_BANK_DATA_OFFSET),
+        .music_dpcm_bank_data_offset = read_u32_le(buffer + TRACK_HEADER_FIELD_MUSIC_DPCM_BANK_DATA_OFFSET),
         .music_dpcm_bank_data_size = (size_t)bank_count * MUSIC_DPCM_SAMPLE_BANK_SIZE,
-        .total_size = (size_t)read_u32_le(buffer + STREAM_HEADER_FIELD_EOF_OFFSET),
-        .music_loop_offset = read_u32_le(buffer + STREAM_HEADER_FIELD_MUSIC_LOOP_OFFSET),
+        .total_size = (size_t)read_u32_le(buffer + TRACK_HEADER_FIELD_EOF_OFFSET),
+        .music_loop_offset = read_u32_le(buffer + TRACK_HEADER_FIELD_MUSIC_LOOP_OFFSET),
         .op_count = op_count,
-        .op_data_offset = read_u32_le(buffer + STREAM_HEADER_FIELD_OP_DATA_OFFSET),
-        .op_data_size = (size_t)op_count * STREAM_OP_SIZE,
-        .channel_mask = read_u64_le(buffer + STREAM_HEADER_FIELD_CHANNEL_MASK)
+        .op_data_offset = read_u32_le(buffer + TRACK_HEADER_FIELD_OP_DATA_OFFSET),
+        .op_data_size = (size_t)op_count * TRACK_OP_SIZE,
+        .channel_mask = read_u64_le(buffer + TRACK_HEADER_FIELD_CHANNEL_MASK)
     };
 
     return info;
