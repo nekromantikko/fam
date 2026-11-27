@@ -54,6 +54,8 @@ The library currently assumes a **little-endian** architecture. It *should* also
 
 An implementation capable of driving a single music track and up to four sound effects simultaneously, one per channel (pulses, triangle or noise). A sound effect takes over its channel for its duration, and when it ends or is stopped, the music is restored on that channel. Playing a sound effect on a channel that already has one playing replaces the old one.
 
+Sound effects can be played at a different pitch with `fam_player_play_sfx_pitched`, for example to randomize repeated sounds. Like a real NES sound driver, the player shifts the period values on their way to the APU and never modifies the track, so it stays within what the hardware can do: noise only has 16 periods to choose from, and a shifted sound effect never writes the high period register unless the track does, since that write restarts the note.
+
 A music track can also be queued to start the moment the current one ends by itself, with no gap. This covers the classic pattern of a jingle interrupting the background music, which then starts again after it:
 
 ```c
