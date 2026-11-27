@@ -157,3 +157,9 @@ FamChannel fam_track_get_sfx_channel(const FamTrack* track) {
     }
     return (FamChannel)channel;
 }
+
+bool fam_track_has_loop(const FamTrack* track) {
+    assert(track != NULL);
+    return (fam_track_get_usage(track) == FAM_TRACK_USAGE_MUSIC &&
+            read_u32_le((const uint8_t*)track + TRACK_HEADER_FIELD_MUSIC_LOOP_OFFSET) != 0);
+}

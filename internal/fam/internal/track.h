@@ -41,8 +41,8 @@
 // 0x02-0x03    u16         duration (-1, in APU cycles. A duration of 0 cannot be expressed, it's always at least 1)
 
 // The duration is effectively the delta to the next operation. So it's the amount of APU cycles to wait before the next operation is processed.
-// In the case of the last operation in the track, the duration is ignored, unless it's a looping song, 
-// in which case the delta applies to the operation at music_loop_offset when the player jumps to it.
+// For the last operation in the track, it's the wait until the end of the track. The player then stops,
+// or for a looping track, jumps to music_loop_offset and processes that operation immediately.
 // Because the value in the file is duration - 1, the effective range for the duration is [1, 65536]
 // This should be enough to express the waits between rows in tracker-authored tracks (65536 APU cycles is ~73ms NTSC, ~79ms PAL)
 
