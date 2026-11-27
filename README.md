@@ -28,7 +28,7 @@ The track format is versioned independently of the library. Every future version
 
 ## Output Format
 
-Samples are output as mono 32-bit floats, at the sample rate given in `FamApuConfig`. A sample rate of 0 outputs one sample per APU cycle (~895 kHz NTSC, ~831 kHz PAL), which is mostly useful for testing or your own resampling.
+Samples are output as mono 32-bit floats (`FAM_AUDIO_F32`) or signed 16-bit integers (`FAM_AUDIO_S16`), in native byte order, at the sample rate given in `FamApuConfig`. All processing happens in floating point and is only quantized when a sample is written, so S16 is the F32 signal rounded to the nearest step and clamped, with nothing converted in a separate pass. A sample rate of 0 outputs one sample per APU cycle (~895 kHz NTSC, ~831 kHz PAL), which is mostly useful for testing or your own resampling.
 
 ## Emulation Accuracy
 
