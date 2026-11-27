@@ -37,6 +37,9 @@ typedef enum {
     FAM_REGISTER_FRAME_COUNTER      = 0x4017
 } FamRegister;
 
+// Size of the register file returned by fam_apu_debug_get_registers, covering $4000-$4017
+#define FAM_APU_REGISTER_FILE_SIZE 0x18
+
 typedef struct FamApuConfig {
     FamRegion region; // 0 = NTSC
     uint32_t sample_rate; // 0 = native APU rate
@@ -58,6 +61,16 @@ FAM_API FamResult FAM_CALL fam_apu_write_register(FamApu* apu, uint16_t reg, uin
 // On real hardware, these reads return open bus, which fam doesn't model
 FAM_API FamResult FAM_CALL fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data);
 FAM_API void FAM_CALL fam_apu_set_dmc_reader(FamApu* apu, FamDmcReadFn reader, void* user_data);
+
+// Debugging only. A real NES game can't see these values, so emulation never depends on them.
+// Copies the last value written to each register, indexed by address - 0x4000. This includes writes
+// made by a player attached to the APU, so it shows what the hardware was actually told.
+// $4015 holds the last value written, not the status fam_apu_read_register returns.
+// The $4014 and $4016 slots aren't APU registers and are always 0. Everything is 0 after init.
+// Like the rest of the APU, this isn't thread-safe: to show the registers on another thread,
+// take the snapshot on the thread that runs the APU (e.g. after fam_player_run) and hand the copy over
+FAM_API void FAM_CALL fam_apu_debug_get_registers(const FamApu* apu, uint8_t out_registers[FAM_APU_REGISTER_FILE_SIZE]);
+
 // Writes one sample per output period elapsed and returns the count. Running exactly
 // fam_apu_get_cycles_for_samples(apu, n) cycles writes exactly n samples. For any other
 // cycle count, size the buffer with fam_apu_get_samples_for_cycles.

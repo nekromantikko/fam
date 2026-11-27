@@ -172,6 +172,7 @@ See [`examples/sdl_demo`](examples/sdl_demo/sdl_demo.c) for a complete program u
 - **Region:** Playing a track on an APU of the other region returns `FAM_ERROR_REGION_MISMATCH`.
 - **Usage:** Passing a sound effect to `fam_player_play_music`, or music to `fam_player_play_sfx`, returns `FAM_ERROR_USAGE_MISMATCH`. `fam_track_get_sfx_channel` returns `FAM_CHANNEL_NONE` for music, and the player's channel functions accept it.
 - **Using the APU on its own:** `FamApu` can also be used without a player, by writing registers with `fam_apu_write_register` and generating samples with `fam_apu_run`. If you use the DMC, provide a sample reader with `fam_apu_set_dmc_reader`.
+- **Debugging:** `fam_apu_debug_get_registers` copies the last value written to each APU register, including the player's writes, e.g. for a register view in an editor. Real hardware can't read these back, so it's for tools only. Take the snapshot on the audio thread and hand the copy to your UI.
 
 ## Roadmap
 

@@ -300,6 +300,10 @@ struct FamApu {
     float dc_block_coeff;
     float dc_block_x_prev;
     float dc_block_y_prev;
+
+    // Last value written to each register, for fam_apu_debug_get_registers only.
+    // Never read by the emulation, which works from the decoded channel state above
+    uint8_t debug_register_file[FAM_APU_REGISTER_FILE_SIZE];
 };
 
 static inline bool pulse_muted(const PulseChannel* pulse) {
@@ -907,7 +911,15 @@ FamResult fam_apu_write_register(FamApu* apu, uint16_t reg, uint8_t data) {
             return FAM_ERROR_INVALID_ARGUMENT;
     }
 
+    // Only reached by valid registers, so the index is always in range
+    apu->debug_register_file[reg - FAM_REGISTER_PULSE1_0] = data;
     return FAM_SUCCESS;
+}
+
+void fam_apu_debug_get_registers(const FamApu* apu, uint8_t out_registers[FAM_APU_REGISTER_FILE_SIZE]) {
+    assert(apu != NULL);
+    assert(out_registers != NULL);
+    memcpy(out_registers, apu->debug_register_file, FAM_APU_REGISTER_FILE_SIZE);
 }
 
 FamResult fam_apu_read_register(FamApu* apu, uint16_t reg, uint8_t* out_data) {
